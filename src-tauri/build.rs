@@ -11,6 +11,7 @@ use remote_build_manifest::PROXYD_BUILD_SOURCE_FILES;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/remote_build_manifest.rs");
+    println!("cargo:rerun-if-changed=../dist");
     for path in PROXYD_BUILD_SOURCE_FILES {
         println!("cargo:rerun-if-changed={path}");
     }
