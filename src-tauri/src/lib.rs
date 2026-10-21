@@ -2167,24 +2167,18 @@ pub(crate) async fn switch_account_internal(
         let launch_codex_as_admin = store.settings.launch_codex_as_admin;
         #[cfg(target_os = "windows")]
         {
+            let plan = cli::prepare_windows_codex_launch(
+                configured_codex_launch_path.as_deref(),
+                launch_codex_as_admin,
+            )?;
+            // 无论是换号后立即启动还是稍后启动，切号前必须停止运行中的 Codex 客户端，
+            // 确保旧会话写锁完全释放且新授权配置能被干净读取。
+            let _ = plan.stop_desktop();
             windows_launch_plan = if should_launch_codex {
-                Some(cli::prepare_windows_codex_launch(
-                    configured_codex_launch_path.as_deref(),
-                    launch_codex_as_admin,
-                )?)
+                Some(plan)
             } else {
                 None
             };
-        }
-        // Stop the desktop client before capturing its final rotated token and
-        // replacing auth.json/config.toml. On macOS this is also required for
-        // "switch only" because the desktop otherwise rewrites the old token.
-        // Project and global desktop state remain shared and untouched.
-        #[cfg(target_os = "windows")]
-        if should_launch_codex {
-            if let Some(plan) = &windows_launch_plan {
-                plan.stop_desktop()?;
-            }
         }
         #[cfg(target_os = "macos")]
         force_stop_running_codex()?;

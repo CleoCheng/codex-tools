@@ -424,70 +424,7 @@ async fn refresh_after_switch(
     }
 }
 
-async fn continue_incomplete_tasks(app: &AppHandle, state: &AppState) {
-    let (enabled, window_minutes, configured_path) = {
-        let _guard = state.store_lock.lock().await;
-        match store::load_store(app) {
-            Ok(store) => (
-                store.settings.auto_continue_after_switch,
-                store.settings.auto_continue_window_minutes,
-                store.settings.codex_launch_path,
-            ),
-            Err(error) => {
-                log::warn!("读取自动续跑设置失败: {error}");
-                return;
-            }
-        }
-    };
-    if !enabled {
-        return;
-    }
 
-    #[cfg(target_os = "windows")]
-    {
-        update_status(app, state, |status| {
-            status.stage = "continued".to_string();
-            status.continued = true;
-            status.message = format!(
-                "已切换到可用账号并重启 Codex App，会话已完全就绪，请在 App 内直接继续任务"
-            );
-        })
-        .await;
-        return;
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    update_status(app, state, |status| {
-        status.stage = "continuing".to_string();
-        status.message = format!(
-            "已切换账号，正在后台续跑最近 {window_minutes} 分钟内未完成的 Codex App 会话"
-        );
-    })
-    .await;
-
-    // 续跑必须由一个存活到任务结束的进程负责：turn/start 只是把任务排进队列，
-    // 发起方一退出，正在执行的任务就会被 abort 成 interrupted。
-    // 因此这里只启动独立后台进程，不等待它完成，避免阻塞自动切换流程。
-    match auto_switch_continue::spawn_continue_worker(configured_path.as_deref(), window_minutes) {
-        Ok(()) => {
-            update_status(app, state, |status| {
-                status.stage = "continued".to_string();
-                status.continued = true;
-                status.message = format!(
-                    "已切换账号；已在后台续跑 {window_minutes} 分钟内未完成的 Codex App 会话，任务会在 App 中继续执行"
-                );
-            })
-            .await;
-        }
-        Err(error) => {
-            update_status(app, state, |status| {
-                status.stage = "failed".to_string();
-                status.message = format!("已切换账号，但启动续跑进程失败：{error}");
-            })
-            .await;
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
