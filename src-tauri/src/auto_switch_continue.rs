@@ -767,117 +767,37 @@ mod tests {
     }
 }
 
-pub(crate) async fn run_continue_and_release(window_minutes: u32) {
-    let _ = tokio::task::spawn_blocking(move || {
-        run_continue_and_release_sync(window_minutes)
-    })
-    .await;
+#[cfg(target_os = "windows")]
+extern "system" {
+    fn keybd_event(b_vk: u8, b_scan: u8, dw_flags: u32, dw_extra_info: usize);
 }
 
-fn run_continue_and_release_sync(window_minutes: u32) -> Result<(), String> {
-    let socket_path = match crate::app_control_socket::control_socket_path() {
-        Some(p) => p,
-        None => return Err("无法获取 socket 路径".to_string()),
-    };
-    if let Some(parent) = socket_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+#[cfg(target_os = "windows")]
+pub(crate) fn send_continue_keystrokes_to_app() {
+    // 将 "继续" 放入剪贴板，随后通过 Ctrl+V 粘贴并回车提交，绕过任何中文输入法阻拦
+    let _ = crate::utils::new_background_command("powershell.exe")
+        .args(["-NoProfile", "-Command", "Set-Clipboard -Value '继续'"])
+        .status();
+
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    unsafe {
+        const VK_CONTROL: u8 = 0x11;
+        const VK_V: u8 = 0x56;
+        const VK_RETURN: u8 = 0x0D;
+        const KEYEVENTF_KEYUP: u32 = 0x0002;
+
+        // Ctrl + V (粘贴 "继续")
+        keybd_event(VK_CONTROL, 0, 0, 0);
+        keybd_event(VK_V, 0, 0, 0);
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0);
+        keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
+
+        // Enter (回车发送)
+        std::thread::sleep(std::time::Duration::from_millis(180));
+        keybd_event(VK_RETURN, 0, 0, 0);
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, 0);
     }
-    let _ = std::fs::remove_file(&socket_path);
-
-    let mut cmd = crate::cli::new_codex_command(None)?;
-    cmd.arg("app-server");
-    cmd.arg("--listen");
-    cmd.arg(format!("unix://{}", socket_path.display()));
-    if let Ok(codex_dir) = crate::app_paths::codex_dir() {
-        cmd.env("CODEX_HOME", codex_dir);
-    }
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::null());
-    cmd.stderr(Stdio::null());
-
-    let mut child = cmd.spawn().map_err(|e| format!("启动临时 app-server 失败: {e}"))?;
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let mut control = None;
-    while std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        if let Ok(c) = crate::app_control_socket::ControlSocket::connect() {
-            control = Some(c);
-            break;
-        }
-    }
-
-    let Some(mut control) = control else {
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = std::fs::remove_file(&socket_path);
-        return Err("连接临时 app-server 超时".to_string());
-    };
-
-    let _ = (|| -> Result<(), String> {
-        control.call(
-            "initialize",
-            json!({
-                "clientInfo": {
-                    "name": "codex-tools",
-                    "title": "Codex Tools",
-                    "version": env!("CARGO_PKG_VERSION"),
-                },
-                "capabilities": serde_json::Value::Null,
-            }),
-            std::time::Duration::from_secs(10),
-        )?;
-
-        let now = crate::utils::now_unix_seconds();
-        let threads = collect_app_threads_via_control(&mut control)?;
-        let targets = select_threads_to_continue(threads, now, window_minutes);
-        let loaded = loaded_thread_ids(&mut control);
-
-        for thread in targets {
-            let already_loaded = loaded.contains(&thread.id);
-            if !already_loaded {
-                let _ = control.call(
-                    "thread/resume",
-                    json!({ "threadId": thread.id, "excludeTurns": true }),
-                    std::time::Duration::from_secs(15),
-                );
-            }
-            let turn_res = control.call(
-                "turn/start",
-                json!({
-                    "threadId": thread.id,
-                    "input": [{
-                        "type": "text",
-                        "text": CONTINUE_PROMPT,
-                        "text_elements": [],
-                    }],
-                }),
-                std::time::Duration::from_secs(30),
-            );
-            if turn_res.is_ok() {
-                let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-                while std::time::Instant::now() < wait_deadline {
-                    match control.recv_text(wait_deadline) {
-                        Ok(msg) => {
-                            if msg.contains("\"turn/completed\"") || msg.contains("\"turn_completed\"") {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }
-        }
-        Ok(())
-    })();
-
-    drop(control);
-    let _ = child.kill();
-    let _ = child.wait();
-    let _ = std::fs::remove_file(&socket_path);
-
-    #[cfg(target_os = "windows")]
-    crate::cli::cleanup_thread_writer_locks();
-
-    Ok(())
 }

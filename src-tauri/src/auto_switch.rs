@@ -371,28 +371,34 @@ pub(crate) async fn run_auto_switch(app: &AppHandle, state: &AppState, summaries
     })
     .await;
 
+    // 启动 Codex App（此时旧进程已停、所有写锁已清空，App 100% 独占打开会话）
+    if let Err(error) = crate::launch_codex_desktop_internal(app, state).await {
+        log::warn!("自动切换后启动 Codex App 失败: {error}");
+    }
+
+    // 若开启了「切换后继续任务」，等待 App 渲染就绪后原生发送“继续”文本并回车提交
     if settings.auto_continue_after_switch {
         update_status(app, state, |status| {
             status.stage = "continuing".to_string();
             status.message = format!(
-                "已切换账号，正在自动续跑未完成任务（最长等待 20 秒），完成后将拉起 Codex App"
+                "已启动 Codex App，正在向 App 输入框发送「继续」指令以恢复任务..."
             );
         })
         .await;
 
-        auto_switch_continue::run_continue_and_release(settings.auto_continue_window_minutes).await;
-    }
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
 
-    // 续跑完成且会话写锁已完全释放后，正式启动 Codex App！
-    if let Err(error) = crate::launch_codex_desktop_internal(app, state).await {
-        log::warn!("自动切换后启动 Codex App 失败: {error}");
+        #[cfg(target_os = "windows")]
+        {
+            auto_switch_continue::send_continue_keystrokes_to_app();
+        }
     }
 
     update_status(app, state, |status| {
         status.stage = "continued".to_string();
         status.continued = true;
         status.message = format!(
-            "已切换账号并恢复中断任务，Codex App 已启动就绪"
+            "已切换账号并重启 Codex App，任务已发送「继续」，正在 App 内进行中执行"
         );
     })
     .await;
