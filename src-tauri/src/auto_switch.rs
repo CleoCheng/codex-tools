@@ -420,6 +420,20 @@ async fn continue_incomplete_tasks(app: &AppHandle, state: &AppState) {
         return;
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        update_status(app, state, |status| {
+            status.stage = "continued".to_string();
+            status.continued = true;
+            status.message = format!(
+                "已切换到可用账号并重启 Codex App，会话已完全就绪，请在 App 内直接继续任务"
+            );
+        })
+        .await;
+        return;
+    }
+
+    #[cfg(not(target_os = "windows"))]
     update_status(app, state, |status| {
         status.stage = "continuing".to_string();
         status.message = format!(
