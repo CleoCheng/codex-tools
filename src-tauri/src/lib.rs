@@ -3125,6 +3125,7 @@ pub fn run() {
             setup_macos_app_menu(app.handle())?;
             tray::setup_system_tray(app.handle())?;
             start_periodic_usage_refresh_loop(app.handle().clone());
+            restore_main_window(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
