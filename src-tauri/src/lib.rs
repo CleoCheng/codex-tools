@@ -2266,12 +2266,14 @@ pub(crate) async fn switch_account_internal(
     }
 
     #[cfg(target_os = "windows")]
-    let (launched_app_path, used_fallback_cli) = {
+    let (launched_app_path, used_fallback_cli) = if should_launch_codex {
         let _ = (configured_codex_launch_path, launch_codex_as_admin);
         windows_launch_plan
             .ok_or_else(|| "缺少切换前已验证的 Windows 启动目标。".to_string())?
             .launch(workspace_path.as_deref())
             .map_err(|error| format!("当前账号已切换，但桌面未能启动：{error}"))?
+    } else {
+        (None, false)
     };
 
     #[cfg(not(target_os = "windows"))]

@@ -120,8 +120,8 @@ pub(super) fn launch_windows_store_target(target: &WindowsStoreCodexTarget) -> R
     // 首选 `shell:AppsFolder\<AUMID>`：不依赖 COM 线程模型，
     // 在 Tauri 的 async 线程上也能稳定工作。
     let shell_target = format!(r"shell:AppsFolder\{}", target.aumid);
-    let mut command = crate::utils::new_background_command("explorer.exe");
-    command.arg(shell_target.as_str());
+    let mut command = crate::utils::new_background_command("cmd.exe");
+    command.args(["/c", "start", "", &shell_target]);
     let spawned = command.spawn().is_ok();
 
     if !spawned || !wait_for_windows_codex_process(&target.executable) {

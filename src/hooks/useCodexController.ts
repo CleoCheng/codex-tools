@@ -697,7 +697,7 @@ export function useCodexController(
   const refreshUsage = useCallback(
     async (
       quiet = false,
-      forceAuthRefresh = !quiet,
+      forceAuthRefresh = false,
       initialRefresh = false,
       source: "startup" | "account-import" | "manual" =
         "manual",
