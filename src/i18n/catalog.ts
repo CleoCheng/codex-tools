@@ -116,6 +116,8 @@ export type MessageCatalog = {
     smartSwitch: string;
     exportButton: string;
     startButton: string;
+    launchCodexApp: string;
+    launchingCodexApp: string;
     dialogAriaLabel: string;
     dialogTitle: string;
     dialogSubtitle: string;
@@ -585,6 +587,21 @@ export type MessageCatalog = {
       checkedText: string;
       uncheckedText: string;
     };
+    autoSwitchOnExhaustion: {
+      label: string;
+      checkedText: string;
+      uncheckedText: string;
+    };
+    autoContinueAfterSwitch: {
+      label: string;
+      checkedText: string;
+      uncheckedText: string;
+    };
+    autoContinueWindow: {
+      label: string;
+      description: string;
+      unit: string;
+    };
     launchCodexAsAdmin: {
       label: string;
       checkedText: string;
@@ -704,6 +721,8 @@ export type MessageCatalog = {
   notices: {
     settingsUpdated: string;
     updateSettingsFailed: (error: string) => string;
+    codexAppLaunched: (target: string) => string;
+    codexAppLaunchFailed: (error: string) => string;
     usageRefreshed: string;
     refreshFailed: (error: string) => string;
     accountWarmupActivated: string;
@@ -909,6 +928,10 @@ function compileLocale(raw: RawMessageCatalog): MessageCatalog {
     },
     notices: {
       ...raw.notices,
+      codexAppLaunched: (target) =>
+        fillTemplate(raw.notices.codexAppLaunched, { target }),
+      codexAppLaunchFailed: (error) =>
+        fillTemplate(raw.notices.codexAppLaunchFailed, { error }),
       updateSettingsFailed: (error) =>
         fillTemplate(raw.notices.updateSettingsFailed, { error }),
       refreshFailed: (error) =>
