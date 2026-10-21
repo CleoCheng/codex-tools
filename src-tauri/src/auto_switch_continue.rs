@@ -368,11 +368,6 @@ fn collect_app_threads_via_control(
 /// `account/read` 才会返回新账号、`ordinaryUsageAllowed` 才变为 true。
 pub(crate) fn run_continue_worker(window_minutes: u32) -> Result<String, String> {
     let now = crate::utils::now_unix_seconds();
-    // 只走 Codex App 的常驻实例：另起 codex app-server 会与 App 争抢会话写锁。
-    // 自动切换流程在续跑前已经重启过 App，写锁此时应已释放。
-    if !crate::app_control_socket::app_control_reachable() {
-        return Err("Codex App 未运行，无法续跑会话".to_string());
-    }
     run_continue_via_app_control(now, window_minutes)
 }
 
@@ -404,7 +399,7 @@ fn app_server_matches_current_auth(
 }
 
 fn run_continue_via_app_control(now: i64, window_minutes: u32) -> Result<String, String> {
-    let mut control = crate::app_control_socket::ControlSocket::connect()?;
+    let mut control = crate::app_control_socket::ControlSocket::connect_or_start(None)?;
     control.call(
         "initialize",
         json!({
@@ -502,10 +497,7 @@ fn continue_incomplete_threads_with(
     window_minutes: u32,
     dry_run: bool,
 ) -> Result<ContinueOutcome, String> {
-    // 只用 Codex App 自己的常驻实例，不再另起 codex app-server：
-    // 两者会争抢会话写锁，导致 App 提示“会话已在另一个应用打开”。
-    let _ = configured_path;
-    let mut control = crate::app_control_socket::ControlSocket::connect()?;
+    let mut control = crate::app_control_socket::ControlSocket::connect_or_start(configured_path)?;
     control.call(
         "initialize",
         json!({

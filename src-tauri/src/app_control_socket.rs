@@ -70,6 +70,47 @@ impl ControlSocket {
         Ok(socket)
     }
 
+    /// 连接控制通道；若尚未启动，自动拉起 background app-server 并等待建立连接。
+    pub(crate) fn connect_or_start(configured_path: Option<&str>) -> Result<Self, String> {
+        if let Ok(socket) = Self::connect() {
+            return Ok(socket);
+        }
+
+        Self::spawn_app_server(configured_path)?;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(150));
+            if let Ok(socket) = Self::connect() {
+                return Ok(socket);
+            }
+        }
+        Self::connect()
+    }
+
+    pub(crate) fn spawn_app_server(configured_path: Option<&str>) -> Result<(), String> {
+        let path = control_socket_path()
+            .ok_or_else(|| "无法获取 app-server-control.sock 路径".to_string())?;
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::remove_file(&path);
+
+        let mut cmd = crate::cli::new_codex_command(configured_path)?;
+        cmd.arg("app-server");
+        cmd.arg("--listen");
+        cmd.arg(format!("unix://{}", path.display()));
+        if let Ok(codex_dir) = crate::app_paths::codex_dir() {
+            cmd.env("CODEX_HOME", codex_dir);
+        }
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.spawn()
+            .map_err(|error| format!("启动 codex app-server 失败: {error}"))?;
+        Ok(())
+    }
+
     fn websocket_handshake(&mut self) -> Result<(), String> {
         let key = base64_encode(&handshake_nonce());
         let request = format!(
