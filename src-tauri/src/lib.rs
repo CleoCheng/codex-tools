@@ -3125,7 +3125,11 @@ pub fn run() {
             setup_macos_app_menu(app.handle())?;
             tray::setup_system_tray(app.handle())?;
             start_periodic_usage_refresh_loop(app.handle().clone());
-            restore_main_window(app.handle());
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                restore_main_window(&handle);
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
