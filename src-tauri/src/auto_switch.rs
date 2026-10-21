@@ -321,12 +321,13 @@ pub(crate) async fn run_auto_switch(app: &AppHandle, state: &AppState, summaries
     // 2. 旧进程持有的会话写锁会随退出释放，续跑才不会被 active writer 拒绝。
     // 额度耗尽时保护旧会话没有意义，因此这里忽略 launch_codex_after_switch。
     let _ = settings.launch_codex_after_switch;
+    // 切换账号前，先停止旧 Codex App，写入新授权配置；暂不启动 App，等续跑完成后再拉起，避免写锁冲突。
     let switch_result = crate::switch_account_internal(
         app,
         state,
         target_id.clone(),
         None,
-        Some(true),
+        Some(false),
         None,
         None,
     )
@@ -371,8 +372,30 @@ pub(crate) async fn run_auto_switch(app: &AppHandle, state: &AppState, summaries
     .await;
 
     if settings.auto_continue_after_switch {
-        continue_incomplete_tasks(app, state).await;
+        update_status(app, state, |status| {
+            status.stage = "continuing".to_string();
+            status.message = format!(
+                "已切换账号，正在自动续跑未完成任务（最长等待 20 秒），完成后将拉起 Codex App"
+            );
+        })
+        .await;
+
+        auto_switch_continue::run_continue_and_release(settings.auto_continue_window_minutes).await;
     }
+
+    // 续跑完成且会话写锁已完全释放后，正式启动 Codex App！
+    if let Err(error) = crate::launch_codex_desktop_internal(app, state).await {
+        log::warn!("自动切换后启动 Codex App 失败: {error}");
+    }
+
+    update_status(app, state, |status| {
+        status.stage = "continued".to_string();
+        status.continued = true;
+        status.message = format!(
+            "已切换账号并恢复中断任务，Codex App 已启动就绪"
+        );
+    })
+    .await;
 
     state.auto_switch.lock().await.in_flight = false;
 }

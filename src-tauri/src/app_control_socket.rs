@@ -143,7 +143,7 @@ impl ControlSocket {
     }
 
     /// 读取下一条文本消息；期间跳过非文本帧。
-    fn recv_text(&mut self, deadline: Instant) -> Result<String, String> {
+    pub(crate) fn recv_text(&mut self, deadline: Instant) -> Result<String, String> {
         loop {
             let (opcode, payload) = self.recv_frame(deadline)?;
             match opcode {

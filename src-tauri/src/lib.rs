@@ -1310,7 +1310,13 @@ async fn launch_codex_desktop(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    // 诊断：把每次调用的结果写到固定文件，便于排查 UI 触发问题。
+    launch_codex_desktop_internal(&app, state.inner()).await
+}
+
+pub(crate) async fn launch_codex_desktop_internal(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<String, String> {
     let diag = |message: &str| {
         if let Ok(dir) = app_paths::codex_dir() {
             let path = dir.join("codex-tools-launch-diag.log");
@@ -1327,7 +1333,7 @@ async fn launch_codex_desktop(
     diag("launch_codex_desktop invoked");
     let (configured_path, launch_as_admin) = {
         let _guard = state.store_lock.lock().await;
-        let store = store::load_store(&app)?;
+        let store = store::load_store(app)?;
         (
             store.settings.codex_launch_path.clone(),
             store.settings.launch_codex_as_admin,
@@ -2781,6 +2787,7 @@ fn force_stop_running_codex() -> Result<(), String> {
 }
 
 fn handle_window_close_to_background(window: &tauri::Window, event: &WindowEvent) {
+    #[cfg(target_os = "macos")]
     if let WindowEvent::CloseRequested { api, .. } = event {
         api.prevent_close();
         if let Err(err) = window.hide() {
@@ -2790,14 +2797,13 @@ fn handle_window_close_to_background(window: &tauri::Window, event: &WindowEvent
                 .app_handle()
                 .emit(MAIN_WINDOW_VISIBILITY_CHANGED_EVENT, false);
         }
-        #[cfg(target_os = "macos")]
-        {
-            // 仅隐藏主窗口到后台时，同时隐藏 Dock 图标；
-            // 应用仍继续运行，可从状态栏再次打开。
-            if let Err(err) = window.app_handle().set_dock_visibility(false) {
-                log::warn!("隐藏 Dock 图标失败: {err}");
-            }
+        if let Err(err) = window.app_handle().set_dock_visibility(false) {
+            log::warn!("隐藏 Dock 图标失败: {err}");
         }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, event);
     }
 }
 
