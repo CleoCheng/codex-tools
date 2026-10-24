@@ -619,7 +619,11 @@ pub(crate) async fn refresh_all_usage_internal(
             }
             if let Some(err) = outcome.usage_error.clone() {
                 if auth_snapshot_still_current {
-                    log::warn!("USAGE_REFRESH_ACCOUNT account_id={} error={}", account.id, err);
+                    log::warn!(
+                        "USAGE_REFRESH_ACCOUNT account_id={} error={}",
+                        account.id,
+                        err
+                    );
                     if fallback_auth_plan_type.is_some() {
                         account.plan_type = fallback_auth_plan_type;
                     }
@@ -1331,7 +1335,8 @@ async fn refresh_usage_for_target(
     let mut extracted = extract_auth(&working_auth_json);
     let mut fetch_result = match &extracted {
         Ok(auth) => {
-            fetch_usage_snapshot_with_client(usage_client, &auth.access_token, &auth.account_id).await
+            fetch_usage_snapshot_with_client(usage_client, &auth.access_token, &auth.account_id)
+                .await
         }
         Err(err) => Err(err.clone()),
     };

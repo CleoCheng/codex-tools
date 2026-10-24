@@ -713,8 +713,6 @@
     "settingsUpdated": "Настройки обновлены",
     "updateSettingsFailed": "Не удалось обновить настройки: {{error}}",
     "usageRefreshed": "Данные использования обновлены",
-    "usageRefreshPartial": "Квота обновлена частично (ошибок {{failed}}/{{total}}): {{error}}; для этих аккаунтов сохранён кэш",
-    "usageRefreshAllFailed": "Квота не обновилась для всех {{total}} аккаунтов: {{error}}; сохранён кэш",
     "refreshFailed": "Ошибка обновления: {{error}}",
     "accountWarmupActivated": "Запрос hello отправлен, прогрев завершён, данные обновлены",
     "accountWarmupAlreadyActive": "5-часовое окно уже активно; запрос не отправлен",
@@ -820,8 +818,11 @@
     "cloudflaredStopped": "Публичный доступ cloudflared остановлен",
     "cloudflaredStopFailed": "Не удалось остановить публичный доступ cloudflared: {{error}}",
     "accountWarmupRequestSent": "Запрос прогрева завершён, но активация окна 5 ч ещё не подтверждена. Обновите квоту позже.",
+    "usageRefreshPartial": "Квота обновлена частично (ошибок {{failed}}/{{total}}): {{error}}; для этих аккаунтов сохранён кэш",
+    "usageRefreshAllFailed": "Квота не обновилась для всех {{total}} аккаунтов: {{error}}; сохранён кэш",
     "codexAppLaunched": "Codex App запущен ({target})",
-    "codexAppLaunchFailed": "Не удалось запустить Codex App: {error}"
+    "codexAppLaunchFailed": "Не удалось запустить Codex App: {error}",
+    "customBuildUpdate": "Это сборка с доработками. Для сохранения автоматической смены аккаунта и продолжения задач установите обновлённую сборку с доработками."
   },
   "resetCredit": {
     "use": "Использовать карту",

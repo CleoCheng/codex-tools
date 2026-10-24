@@ -736,6 +736,7 @@ export type MessageCatalog = {
     reloginRequired: (label: string) => string;
     preparingUpdateDownload: string;
     alreadyLatest: string;
+    customBuildUpdate: string;
     updateDownloadStarted: string;
     updateDownloadingPercent: (percent: number) => string;
     updateDownloading: string;

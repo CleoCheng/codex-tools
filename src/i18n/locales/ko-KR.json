@@ -713,8 +713,6 @@
     "settingsUpdated": "설정이 업데이트되었습니다",
     "updateSettingsFailed": "설정 업데이트 실패: {{error}}",
     "usageRefreshed": "사용량이 갱신되었습니다",
-    "usageRefreshPartial": "사용량 갱신 일부 실패 ({{failed}}/{{total}}): {{error}}. 실패한 계정은 캐시를 유지합니다",
-    "usageRefreshAllFailed": "계정 {{total}}개 모두 사용량 갱신 실패: {{error}}. 캐시를 유지합니다",
     "refreshFailed": "새로고침 실패: {{error}}",
     "accountWarmupActivated": "hello 요청으로 예열을 완료하고 사용량을 갱신했습니다",
     "accountWarmupAlreadyActive": "5시간 창이 이미 활성화되어 요청을 보내지 않았습니다",
@@ -820,8 +818,11 @@
     "cloudflaredStopped": "cloudflared 공개 액세스가 중지되었습니다",
     "cloudflaredStopFailed": "cloudflared 공개 액세스 중지 실패: {{error}}",
     "accountWarmupRequestSent": "워밍업 요청은 완료되었지만 5h 창 활성화는 아직 확인되지 않았습니다. 잠시 후 사용량을 새로 고치세요.",
+    "usageRefreshPartial": "사용량 갱신 일부 실패 ({{failed}}/{{total}}): {{error}}. 실패한 계정은 캐시를 유지합니다",
+    "usageRefreshAllFailed": "계정 {{total}}개 모두 사용량 갱신 실패: {{error}}. 캐시를 유지합니다",
     "codexAppLaunched": "Codex App을 실행했습니다({target})",
-    "codexAppLaunchFailed": "Codex App 실행 실패: {error}"
+    "codexAppLaunchFailed": "Codex App 실행 실패: {error}",
+    "customBuildUpdate": "사용자 지정 확장 버전입니다. 자동 계정 전환과 작업 재개 기능을 유지하려면 새 사용자 지정 설치 패키지를 사용하세요."
   },
   "resetCredit": {
     "use": "이 카드 사용",

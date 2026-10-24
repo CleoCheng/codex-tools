@@ -141,9 +141,15 @@ fn launch_windows_store_target_with(
     // "Class not registered" dialog, and process creation cannot report that
     // activation failure. Call the registered App contract directly instead.
     // AO_NOERRORUI keeps errors in our Result/log/status rather than a Shell dialog.
-    log::info!("CODEX_DESKTOP_LAUNCH action=activating method=aumid aumid={}", target.aumid);
+    log::info!(
+        "CODEX_DESKTOP_LAUNCH action=activating method=aumid aumid={}",
+        target.aumid
+    );
     let process_id = activate(&target.aumid).map_err(|error| {
-        let detail = format!("启动微软商店版 Codex 失败（AUMID={}）：{error}", target.aumid);
+        let detail = format!(
+            "启动微软商店版 Codex 失败（AUMID={}）：{error}",
+            target.aumid
+        );
         log::warn!("CODEX_DESKTOP_LAUNCH action=activation_failed method=aumid error={detail}");
         detail
     })?;
@@ -220,11 +226,25 @@ mod tests {
     fn cold_launch_activates_registered_app_before_process_verification() {
         let target = target();
         let stage = Cell::new(0);
-        launch_windows_store_target_with(&target,
-            |path| { assert_eq!(path, target.executable); assert_eq!(stage.replace(1), 0); false },
-            |aumid| { assert_eq!(aumid, target.aumid); assert_eq!(stage.replace(2), 1); Ok(42) },
-            |path| { assert_eq!(path, target.executable); assert_eq!(stage.replace(3), 2); true },
-        ).unwrap();
+        launch_windows_store_target_with(
+            &target,
+            |path| {
+                assert_eq!(path, target.executable);
+                assert_eq!(stage.replace(1), 0);
+                false
+            },
+            |aumid| {
+                assert_eq!(aumid, target.aumid);
+                assert_eq!(stage.replace(2), 1);
+                Ok(42)
+            },
+            |path| {
+                assert_eq!(path, target.executable);
+                assert_eq!(stage.replace(3), 2);
+                true
+            },
+        )
+        .unwrap();
         assert_eq!(stage.get(), 3);
         assert_eq!(STORE_ACTIVATION_OPTIONS, AO_NOERRORUI);
     }
@@ -232,30 +252,33 @@ mod tests {
     #[test]
     fn failed_activation_preserves_hresult_and_cannot_be_confirmed_by_a_later_manual_launch() {
         let target = target();
-        let error = launch_windows_store_target_with(&target,
+        let error = launch_windows_store_target_with(
+            &target,
             |_| false,
             |_| Err("Class not registered (0x80040154)".to_string()),
             |_| panic!("process polling must not turn failed activation into success"),
-        ).unwrap_err();
+        )
+        .unwrap_err();
         assert!(error.contains("0x80040154"));
         assert!(error.contains(&target.aumid));
     }
 
     #[test]
     fn activation_broker_pid_without_desktop_is_not_a_success() {
-        let error = launch_windows_store_target_with(&target(),
-            |_| false, |_| Ok(42), |_| false,
-        ).unwrap_err();
+        let error = launch_windows_store_target_with(&target(), |_| false, |_| Ok(42), |_| false)
+            .unwrap_err();
         assert!(error.contains("未检测到当前用户的桌面进程"));
         assert!(error.contains("42"));
     }
 
     #[test]
     fn existing_verified_desktop_remains_available_if_refocusing_fails() {
-        launch_windows_store_target_with(&target(),
+        launch_windows_store_target_with(
+            &target(),
             |_| true,
             |_| Err("Unable to refocus".to_string()),
             |_| panic!("an already verified desktop does not need another launch wait"),
-        ).unwrap();
+        )
+        .unwrap();
     }
 }

@@ -7,6 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import { PROJECT_LATEST_RELEASE_URL } from "../constants/externalLinks";
+import { CUSTOM_BUILD } from "../constants/customBuild";
 import { useI18n } from "../i18n/I18nProvider";
 import { localizeBackendError } from "../i18n/backendErrors";
 import { DEFAULT_LOCALE } from "../i18n/catalog";
@@ -967,6 +968,12 @@ export function useCodexController(
 
   const installPendingUpdate = useCallback(
     async (knownUpdate?: NonNullable<Awaited<ReturnType<typeof check>>>) => {
+      if (CUSTOM_BUILD) {
+        setPendingUpdate(null);
+        setUpdateDialogOpen(false);
+        setNotice({ type: "info", message: copy.notices.customBuildUpdate });
+        return;
+      }
       if (installingUpdateRef.current) {
         return;
       }
@@ -1033,6 +1040,12 @@ export function useCodexController(
 
   const checkForAppUpdate = useCallback(
     async (quiet = false) => {
+      if (CUSTOM_BUILD) {
+        if (!quiet) {
+          setNotice({ type: "info", message: copy.notices.customBuildUpdate });
+        }
+        return;
+      }
       if (!quiet) {
         setCheckingUpdate(true);
       }

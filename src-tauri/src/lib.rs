@@ -41,6 +41,7 @@ mod tray;
 mod tray_visual;
 mod usage;
 mod utils;
+mod window_state;
 #[cfg(target_os = "windows")]
 mod windows_desktop_lifecycle;
 #[cfg(target_os = "windows")]
@@ -2784,6 +2785,7 @@ fn force_stop_running_codex() -> Result<(), String> {
 }
 
 fn handle_window_close_to_background(window: &tauri::Window, event: &WindowEvent) {
+    window_state::on_event(window, event);
     #[cfg(target_os = "macos")]
     if let WindowEvent::CloseRequested { api, .. } = event {
         api.prevent_close();
@@ -3108,6 +3110,7 @@ pub fn run() {
         .on_window_event(handle_window_close_to_background)
         .setup(|app| {
             utils::prepare_process_path();
+            window_state::restore(app.handle());
 
             // Release builds need the same diagnostics as development builds;
             // otherwise a failed background continuation leaves no evidence.
@@ -3122,7 +3125,7 @@ pub fn run() {
                     .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
                     .build(),
             )?;
-            log::info!("APP_START version={} patch=20261023.6 log_dir={:?}", env!("CARGO_PKG_VERSION"), app.path().app_log_dir());
+            log::info!("APP_START version={} patch=20261024.7 custom=windows-enhanced.1 log_dir={:?}", env!("CARGO_PKG_VERSION"), app.path().app_log_dir());
 
             #[cfg(debug_assertions)]
             auth::log_current_auth_parse_diagnostic("startup");
@@ -3213,6 +3216,7 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } => window_state::save(app_handle),
         tauri::RunEvent::Ready => {
             let app_handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
