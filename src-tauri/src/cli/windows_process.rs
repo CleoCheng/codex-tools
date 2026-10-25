@@ -120,17 +120,97 @@ pub(super) fn windows_paths_equal(left: &Path, right: &Path) -> bool {
         .eq_ignore_ascii_case(&right.to_string_lossy().replace('/', "\\"))
 }
 
-#[cfg(target_os = "windows")]
+#[derive(Clone, Debug)]
+pub(super) struct WindowsSwitchProcess {
+    pub(super) pid: sysinfo::Pid,
+    pub(super) parent: Option<sysinfo::Pid>,
+    pub(super) executable: Option<PathBuf>,
+    pub(super) started_at: u64,
+}
+
+pub(super) fn windows_switch_process_snapshot(
+    system: &sysinfo::System,
+) -> Result<Vec<WindowsSwitchProcess>, String> {
+    let pid = sysinfo::get_current_pid().map_err(|error| error.to_string())?;
+    let current = system.process(pid).ok_or("无法识别当前进程，未停止应用。")?;
+    let user = current.user_id().ok_or("无法识别当前用户，未停止应用。")?;
+    let session = current.session_id().ok_or("无法识别当前会话，未停止应用。")?;
+    Ok(system
+        .processes()
+        .iter()
+        .filter(|(_, process)| process.user_id() == Some(user) && process.session_id() == Some(session))
+        .map(|(pid, process)| WindowsSwitchProcess {
+            pid: *pid,
+            parent: process.parent(),
+            executable: process.exe().map(Path::to_path_buf),
+            started_at: process.start_time(),
+        })
+        .collect())
+}
+
+// A child relationship is not application ownership: a terminal can start an
+// independent IDE, browser, or server. Only recognized Codex components qualify.
+pub(super) fn is_windows_codex_stop_component(
+    path: &Path,
+    desktops: &[PathBuf],
+    runtime_root: Option<&Path>,
+) -> bool {
+    let normalize = |path: &Path| path.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    let path = normalize(path);
+    if path.split('\\').any(|part| part == "." || part == "..") {
+        return false;
+    }
+    for desktop in desktops {
+        if path == normalize(desktop) {
+            return true;
+        }
+        if let Some(directory) = desktop.parent() {
+            let prefix = format!("{}\\", normalize(&directory.join("resources")));
+            if path.starts_with(&prefix) && path.ends_with("\\codex.exe") {
+                return true;
+            }
+        }
+    }
+    runtime_root.is_some_and(|root| {
+        let prefix = format!("{}\\", normalize(root));
+        let Some(relative) = path.strip_prefix(&prefix) else { return false };
+        let parts = relative.split('\\').collect::<Vec<_>>();
+        parts.len() == 2 && !parts[0].is_empty() && parts[1] == "codex.exe"
+    })
+}
+
 pub(super) fn windows_switch_stop_targets(
     roots: HashSet<sysinfo::Pid>,
-    same_user_parents: &[(sysinfo::Pid, Option<sysinfo::Pid>)],
+    processes: &[WindowsSwitchProcess],
     current_pid: sysinfo::Pid,
+    runtime_root: Option<&Path>,
 ) -> HashSet<sysinfo::Pid> {
-    // Tools may itself have been opened from a Codex terminal. Its own process
-    // and helpers must survive long enough to apply the profile and relaunch.
-    let protected = windows_desktop_descendants(HashSet::from([current_pid]), same_user_parents);
-    windows_desktop_descendants(roots, same_user_parents)
-        .difference(&protected)
-        .copied()
-        .collect()
+    let records = processes.iter().map(|process| (process.pid, process)).collect::<std::collections::HashMap<_, _>>();
+    let desktops = processes.iter()
+        .filter(|process| roots.contains(&process.pid))
+        .filter_map(|process| process.executable.clone())
+        .collect::<Vec<_>>();
+    let mut targets = roots;
+    targets.remove(&current_pid);
+    loop {
+        let previous = targets.len();
+        for process in processes {
+            if process.pid == current_pid || targets.contains(&process.pid) {
+                continue;
+            }
+            let Some(parent) = process.parent.and_then(|pid| records.get(&pid)) else { continue };
+            if targets.contains(&parent.pid)
+                && parent.started_at > 0
+                && process.started_at >= parent.started_at
+                && process.executable.as_deref().is_some_and(|path| {
+                    is_windows_codex_stop_component(path, &desktops, runtime_root)
+                })
+            {
+                targets.insert(process.pid);
+            }
+        }
+        if targets.len() == previous {
+            return targets;
+        }
+    }
 }

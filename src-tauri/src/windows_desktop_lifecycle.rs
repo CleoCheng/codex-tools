@@ -70,6 +70,7 @@ impl ProcessHandle {
         if self.exited()? {
             return Ok(());
         }
+        log::info!("CODEX_DESKTOP_STOP action=terminate pid={} executable={:?}", self.pid, self.executable().ok());
         let result = unsafe { TerminateProcess(self.handle, 1) };
         if result.is_err() && !self.exited()? {
             return Err("已验证进程终止失败，未更改当前账号。".into());
@@ -142,6 +143,7 @@ pub(crate) fn stop(handles: &[ProcessHandle], roots: &HashSet<sysinfo::Pid>) -> 
                 .iter()
                 .any(|h| h.pid.as_u32() == pid && roots.contains(&h.pid))
             {
+                log::info!("CODEX_DESKTOP_STOP action=request_close pid={pid}");
                 unsafe {
                     let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
                 }

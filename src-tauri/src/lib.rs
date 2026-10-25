@@ -2175,7 +2175,7 @@ pub(crate) async fn switch_account_internal(
             )?;
             // 无论是换号后立即启动还是稍后启动，切号前必须停止运行中的 Codex 客户端，
             // 确保旧会话写锁完全释放且新授权配置能被干净读取。
-            let _ = plan.stop_desktop();
+            plan.stop_desktop()?;
             windows_launch_plan = if should_launch_codex {
                 Some(plan)
             } else {
@@ -3125,7 +3125,7 @@ pub fn run() {
                     .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
                     .build(),
             )?;
-            log::info!("APP_START version={} patch=20261024.7 custom=windows-enhanced.1 log_dir={:?}", env!("CARGO_PKG_VERSION"), app.path().app_log_dir());
+            log::info!("APP_START version={} patch=20261026.8 custom=windows-enhanced.2 log_dir={:?}", env!("CARGO_PKG_VERSION"), app.path().app_log_dir());
 
             #[cfg(debug_assertions)]
             auth::log_current_auth_parse_diagnostic("startup");

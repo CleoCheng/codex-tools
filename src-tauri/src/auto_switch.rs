@@ -331,8 +331,8 @@ pub(crate) async fn run_auto_switch(app: &AppHandle, state: &AppState, summaries
         target_id.clone(),
         None,
         Some(false),
-        None,
-        None,
+        Some(false), // 自动换号只重启 Codex，不继承手动编辑器重启设置。
+        Some(Vec::new()),
     )
     .await;
 
