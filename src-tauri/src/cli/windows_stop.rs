@@ -42,6 +42,14 @@ pub(super) fn stop_desktop(executable: Option<&Path>) -> Result<(), String> {
     let roots = running_windows_desktop_process_ids(&system, &expected)?;
     let verified_processes = windows_switch_process_snapshot(&system)?;
     let verified = windows_switch_stop_targets(roots.clone(), &verified_processes, current_pid, runtime_root.as_deref());
+    // Do not close Codex if its teardown can also end this controller. This
+    // check runs before WM_CLOSE or any termination and never relaunches Tools.
+    let job_members = crate::windows_desktop_lifecycle::current_job_process_ids()?;
+    log::info!("CODEX_DESKTOP_STOP controller_pid={current_pid} controller_job_members={job_members:?}");
+    if let Err(error) = validate_windows_controller_independence(&verified, &verified_processes, current_pid, &job_members) {
+        log::warn!("CODEX_DESKTOP_STOP action=blocked_controller_dependency error={error}");
+        return Err(error);
+    }
     for handle in &handles {
         if handle.exited()? { continue; }
         let process = system.process(handle.pid).ok_or("进程核验状态变化，未更改当前账号。")?;

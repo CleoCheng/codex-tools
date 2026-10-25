@@ -9,27 +9,9 @@ fn main() {
         return;
     }
 
-    #[cfg(target_os = "windows")]
-    terminate_stale_app_instances();
-
+    // The single-instance plugin restores the existing window. Never terminate
+    // an existing manager when a shortcut or restart path launches it again.
     app_lib::run();
-}
-
-#[cfg(target_os = "windows")]
-fn terminate_stale_app_instances() {
-    let current_pid = std::process::id();
-    let mut system = sysinfo::System::new();
-    system.refresh_processes();
-    let current_exe = std::env::current_exe().ok();
-    for (&pid, process) in system.processes() {
-        if pid.as_u32() != current_pid {
-            if let Some(exe) = process.exe() {
-                if current_exe.as_deref() == Some(exe) {
-                    let _ = process.kill();
-                }
-            }
-        }
-    }
 }
 
 #[cfg(target_os = "windows")]

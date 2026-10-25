@@ -80,11 +80,9 @@ pub(super) fn running_windows_desktop_process_ids(
     current_session_process_ids(system, |path| desktop_path_requires_stop(path, expected))
 }
 
-pub(super) fn desktop_path_requires_stop(path: &Path, expected: &[PathBuf]) -> bool {
+pub(super) fn desktop_path_requires_stop(path: &Path, _expected: &[PathBuf]) -> bool {
+    // A configured path must not grant shutdown authority over an arbitrary app.
     is_windows_codex_app_file(path)
-        || expected
-            .iter()
-            .any(|target| windows_paths_equal(path, target))
 }
 
 fn current_session_process_ids(
@@ -190,12 +188,16 @@ pub(super) fn windows_switch_stop_targets(
         .filter(|process| roots.contains(&process.pid))
         .filter_map(|process| process.executable.clone())
         .collect::<Vec<_>>();
-    let mut targets = roots;
-    targets.remove(&current_pid);
+    let roots = roots.into_iter().filter(|pid| {
+        records.get(pid).and_then(|process| process.executable.as_deref())
+            .is_some_and(|path| desktop_path_requires_stop(path, &[]))
+    }).collect::<HashSet<_>>();
+    let protected = windows_controller_owned_processes(&roots, processes, current_pid);
+    let mut targets = roots.difference(&protected).copied().collect::<HashSet<_>>();
     loop {
         let previous = targets.len();
         for process in processes {
-            if process.pid == current_pid || targets.contains(&process.pid) {
+            if protected.contains(&process.pid) || targets.contains(&process.pid) {
                 continue;
             }
             let Some(parent) = process.parent.and_then(|pid| records.get(&pid)) else { continue };
@@ -213,4 +215,57 @@ pub(super) fn windows_switch_stop_targets(
             return targets;
         }
     }
+}
+
+// Protect the controller and its UI/helpers as a branch. A separately verified
+// Codex desktop launched by Tools remains restartable outside that branch.
+fn windows_controller_owned_processes(
+    roots: &HashSet<sysinfo::Pid>,
+    processes: &[WindowsSwitchProcess],
+    current_pid: sysinfo::Pid,
+) -> HashSet<sysinfo::Pid> {
+    let controller = processes.iter().find(|process| process.pid == current_pid);
+    let mut protected = HashSet::from([current_pid]);
+    for process in processes {
+        if controller.and_then(|process| process.executable.as_deref())
+            .zip(process.executable.as_deref())
+            .is_some_and(|(left, right)| windows_paths_equal(left, right))
+        {
+            protected.insert(process.pid);
+        }
+    }
+    loop {
+        let before = protected.len();
+        for process in processes {
+            if !roots.contains(&process.pid)
+                && process.parent.is_some_and(|parent| protected.contains(&parent))
+            {
+                protected.insert(process.pid);
+            }
+        }
+        if protected.len() == before { return protected; }
+    }
+}
+
+pub(super) fn validate_windows_controller_independence(
+    targets: &HashSet<sysinfo::Pid>,
+    processes: &[WindowsSwitchProcess],
+    current_pid: sysinfo::Pid,
+    job_members: &HashSet<sysinfo::Pid>,
+) -> Result<(), String> {
+    let blocked = || "为保持 Codex Tools 和其他应用运行，本次未停止 Codex 或切换账号：工具与 Codex 存在启动或进程作业依赖。请从开始菜单或资源管理器独立启动 Codex Tools。".to_string();
+    if targets.contains(&current_pid) || !targets.is_disjoint(job_members) {
+        return Err(blocked());
+    }
+    let records = processes.iter().map(|process| (process.pid, process)).collect::<std::collections::HashMap<_, _>>();
+    let mut cursor = current_pid;
+    let mut seen = HashSet::new();
+    while seen.insert(cursor) {
+        let Some(process) = records.get(&cursor) else { break };
+        let Some(parent) = process.parent.and_then(|pid| records.get(&pid)) else { break };
+        if parent.started_at == 0 || parent.started_at > process.started_at { break; }
+        if targets.contains(&parent.pid) { return Err(blocked()); }
+        cursor = parent.pid;
+    }
+    Ok(())
 }

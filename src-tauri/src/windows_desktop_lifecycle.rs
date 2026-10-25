@@ -9,8 +9,9 @@ use windows::{
     core::{BOOL, PWSTR},
     Win32::{
         Foundation::{CloseHandle, HANDLE, HWND, LPARAM, WAIT_OBJECT_0, WAIT_TIMEOUT, WPARAM},
+        System::JobObjects::{IsProcessInJob, JobObjectBasicProcessIdList, QueryInformationJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST},
         System::Threading::{
-            OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
+            GetCurrentProcess, OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
             PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
             PROCESS_TERMINATE,
         },
@@ -125,6 +126,17 @@ pub(crate) fn stop(handles: &[ProcessHandle], roots: &HashSet<sysinfo::Pid>) -> 
     if handles.is_empty() {
         return Ok(());
     }
+    // Last line of defense, independent of the caller's selection algorithm.
+    let current_pid = std::process::id();
+    let current_exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    for handle in handles {
+        if handle.exited()? { continue; }
+        if handle.pid.as_u32() == current_pid || handle.executable().is_ok_and(|path| {
+            path.to_string_lossy().eq_ignore_ascii_case(&current_exe.to_string_lossy())
+        }) {
+            return Err("保护 Codex Tools：拒绝关闭当前工具或其他工具实例，未停止 Codex。".into());
+        }
+    }
     let graceful = {
         let _timing = crate::switch_timing::Phase::start("desktop_graceful_close");
         for hwnd in windows(
@@ -167,6 +179,37 @@ pub(crate) fn stop(handles: &[ProcessHandle], roots: &HashSet<sysinfo::Pid>) -> 
     Ok(())
 }
 
+// Query only; never assign processes to jobs or change their lifetime policy.
+pub(crate) fn current_job_process_ids() -> Result<HashSet<sysinfo::Pid>, String> {
+    let mut in_job = BOOL(0);
+    unsafe { IsProcessInJob(GetCurrentProcess(), None, &mut in_job) }
+        .map_err(|error| format!("无法确认工具进程作业，未停止 Codex：{error}"))?;
+    if !in_job.as_bool() { return Ok(HashSet::new()); }
+    for words in [256, 1024, 4096, 16384] {
+        // usize storage supplies pointer alignment for the Windows variable-
+        // length structure. Only initialized entries inside the buffer are read.
+        let mut buffer = vec![0usize; words];
+        let result = unsafe {
+            QueryInformationJobObject(None, JobObjectBasicProcessIdList,
+                buffer.as_mut_ptr().cast(), (buffer.len() * std::mem::size_of::<usize>()) as u32, None)
+        };
+        if let Err(error) = result {
+            if error.code() == windows::core::HRESULT::from_win32(234) { continue; }
+            return Err(format!("无法读取工具进程作业，未停止 Codex：{error}"));
+        }
+        let list = unsafe { &*(buffer.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()) };
+        let count = list.NumberOfProcessIdsInList as usize;
+        if list.NumberOfAssignedProcesses > list.NumberOfProcessIdsInList { continue; }
+        let offset = std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList);
+        if offset + count * std::mem::size_of::<usize>() > buffer.len() * std::mem::size_of::<usize>() {
+            return Err("工具进程作业列表无效，未停止 Codex。".into());
+        }
+        let ids = unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>().add(offset).cast::<usize>(), count) };
+        return Ok(ids.iter().filter_map(|pid| u32::try_from(*pid).ok()).map(sysinfo::Pid::from_u32).collect());
+    }
+    Err("工具进程作业列表持续变化，未停止 Codex。".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +233,20 @@ mod tests {
                 .unwrap(),
         )
     }
+    #[test]
+    fn native_shutdown_refuses_to_close_the_controller_itself() {
+        let pid = sysinfo::get_current_pid().unwrap();
+        let handle = ProcessHandle::open(pid).unwrap();
+        let error = stop(&[handle], &HashSet::from([pid])).unwrap_err();
+        assert!(error.contains("保护 Codex Tools"));
+    }
+
+    #[test]
+    fn current_job_query_is_read_only_and_includes_the_controller_when_assigned() {
+        let members = current_job_process_ids().unwrap();
+        assert!(members.is_empty() || members.contains(&sysinfo::get_current_pid().unwrap()));
+    }
+
     #[test]
     fn native_stop_waits_for_disposable_process_and_preserves_other_child() {
         let mut target = sleeper();

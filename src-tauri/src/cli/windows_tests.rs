@@ -297,3 +297,72 @@ fn switching_launch_installation_still_selects_running_store_desktop() {
         ));
     }
 }
+
+#[test]
+fn configured_tools_or_other_application_path_never_becomes_a_desktop_shutdown_target() {
+    for path in [r"C:\Apps\Codex Tools\app.exe", r"C:\Apps\Antigravity.exe", r"C:\Windows\explorer.exe"] {
+        assert!(!desktop_path_requires_stop(Path::new(path), &[PathBuf::from(path)]));
+    }
+}
+
+#[test]
+fn stop_selection_protects_tools_and_webview_even_if_controller_was_given_as_a_root() {
+    let processes = [
+        stop_test_process(10, 1, Some(STOP_TEST_DESKTOP), 10),
+        stop_test_process(11, 10, Some(STOP_TEST_DESKTOP), 11),
+        stop_test_process(100, 10, Some(r"C:\Apps\Codex Tools\app.exe"), 12),
+        stop_test_process(101, 100, Some(r"C:\WebView2\msedgewebview2.exe"), 13),
+        stop_test_process(102, 101, Some(STOP_TEST_SERVER), 14),
+    ];
+    let targets = windows_switch_stop_targets([10, 100].map(sysinfo::Pid::from_u32).into_iter().collect(), &processes, sysinfo::Pid::from_u32(100), Some(Path::new(STOP_TEST_RUNTIME)));
+    assert_eq!(targets, [10, 11].map(sysinfo::Pid::from_u32).into_iter().collect());
+}
+
+#[test]
+fn tools_started_from_codex_is_blocked_before_stopping_its_ancestors() {
+    let processes = [
+        stop_test_process(10, 1, Some(STOP_TEST_DESKTOP), 10),
+        stop_test_process(11, 10, Some(STOP_TEST_SERVER), 11),
+        stop_test_process(50, 11, Some(r"C:\Windows\System32\cmd.exe"), 12),
+        stop_test_process(100, 50, Some(r"C:\Apps\Codex Tools\app.exe"), 13),
+    ];
+    let targets = stop_test_targets(&processes, 100);
+    let error = validate_windows_controller_independence(&targets, &processes, sysinfo::Pid::from_u32(100), &HashSet::new()).unwrap_err();
+    assert!(error.contains("独立启动 Codex Tools"));
+}
+
+#[test]
+fn controller_sharing_a_job_with_codex_is_blocked_even_without_a_parent_relationship() {
+    let processes = [
+        stop_test_process(10, 1, Some(STOP_TEST_DESKTOP), 10),
+        stop_test_process(100, 1, Some(r"C:\Apps\Codex Tools\app.exe"), 13),
+    ];
+    let targets = stop_test_targets(&processes, 100);
+    let job = [10, 100, 101].map(sysinfo::Pid::from_u32).into_iter().collect();
+    assert!(validate_windows_controller_independence(&targets, &processes, sysinfo::Pid::from_u32(100), &job).is_err());
+}
+
+#[test]
+fn independent_tools_can_restart_codex_while_its_webview_and_unrelated_apps_survive() {
+    let processes = [
+        stop_test_process(100, 1, Some(r"C:\Apps\Codex Tools\app.exe"), 9),
+        stop_test_process(101, 100, Some(r"C:\WebView2\msedgewebview2.exe"), 10),
+        stop_test_process(10, 100, Some(STOP_TEST_DESKTOP), 11),
+        stop_test_process(11, 10, Some(STOP_TEST_SERVER), 12),
+        stop_test_process(20, 1, Some(r"C:\Apps\Antigravity.exe"), 10),
+    ];
+    let targets = stop_test_targets(&processes, 100);
+    let job = [100, 101].map(sysinfo::Pid::from_u32).into_iter().collect();
+    assert_eq!(targets, [10, 11].map(sysinfo::Pid::from_u32).into_iter().collect());
+    assert!(validate_windows_controller_independence(&targets, &processes, sysinfo::Pid::from_u32(100), &job).is_ok());
+}
+
+#[test]
+fn controller_dependency_check_ignores_a_recycled_parent_pid() {
+    let processes = [
+        stop_test_process(10, 1, Some(STOP_TEST_DESKTOP), 20),
+        stop_test_process(100, 10, Some(r"C:\Apps\Codex Tools\app.exe"), 10),
+    ];
+    let targets = stop_test_targets(&processes, 100);
+    assert!(validate_windows_controller_independence(&targets, &processes, sysinfo::Pid::from_u32(100), &HashSet::new()).is_ok());
+}

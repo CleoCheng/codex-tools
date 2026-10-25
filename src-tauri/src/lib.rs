@@ -3125,7 +3125,10 @@ pub fn run() {
                     .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
                     .build(),
             )?;
-            log::info!("APP_START version={} patch=20261026.8 custom=windows-enhanced.2 log_dir={:?}", env!("CARGO_PKG_VERSION"), app.path().app_log_dir());
+            log::info!("APP_START version={} patch=20261026.9 custom=windows-enhanced.3 log_dir={:?}", env!("CARGO_PKG_VERSION"), app.path().app_log_dir());
+
+            #[cfg(target_os = "windows")]
+            log::info!("TOOLS_CONTROLLER pid={} job_members={:?}", std::process::id(), windows_desktop_lifecycle::current_job_process_ids());
 
             #[cfg(debug_assertions)]
             auth::log_current_auth_parse_diagnostic("startup");
