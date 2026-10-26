@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { I18nProvider } from "../../src/i18n/I18nProvider";
 import { ClassicAccountsGrid } from "../../src/components/classic/ClassicAccountsGrid";
 import { ClassicMetaStrip } from "../../src/components/classic/ClassicMetaStrip";
+import { ClassicAccountStats } from "../../src/components/classic/ClassicAccountStats";
 import { ClassicAccountActions } from "../../src/components/classic/ClassicAccountActions";
 import { ClassicTopBar } from "../../src/components/classic/ClassicTopBar";
 import { SettingsPanel } from "../../src/components/SettingsPanel";
@@ -143,6 +144,11 @@ check(
     accountHtml.includes('accountTokenCard') &&
     accountHtml.includes('class="usageMeterReset"'),
 );
+const oldUsage = tokenUsage.accounts![0];
+const olderAccountHtml = render(<ClassicAccountStats account={accounts[0]} locale="zh-CN"
+  usage={{ ...oldUsage, last24h: { ...oldUsage.last24h, totalTokens: 0 } }} />);
+check("Older account usage stays visible with its true period and an explicit zero-24h tooltip",
+  olderAccountHtml.includes("7d 会话") && olderAccountHtml.includes("近24h 0"));
 const legacyAccountHtml = render(
   <ClassicAccountsGrid
     {...props}

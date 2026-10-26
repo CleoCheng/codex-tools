@@ -446,7 +446,7 @@ fn apply_continue_outcome(
         );
     } else if count > 0 {
         status.stage = "continued".to_string();
-        status.message = format!("已切换账号并重启 Codex App，已确认 {count} 条任务收到继续消息并启动新回合");
+        status.message = format!("已切换账号并重启 Codex App，已确认 {count} 条任务启动新回合（含上下文压缩阶段）");
     } else if skipped_count > 0 {
         status.stage = "switched".to_string();
         status.message = format!(

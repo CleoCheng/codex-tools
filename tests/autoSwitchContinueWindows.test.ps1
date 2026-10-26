@@ -12,7 +12,7 @@ function Assert-True($condition, $message) {
 
 # Reproduce the installed Store build's actual executable identity. The CLI and
 # the ordinary ChatGPT package must not qualify just because their names match.
-foreach ($functionName in @('Test-CodexDesktopProcess', 'Get-CodexDesktopProcesses')) {
+foreach ($functionName in @('Test-CodexDesktopProcess', 'Get-CodexDesktopProcesses', 'Test-StopControl', 'Test-RunningTransition', 'Wait-RunningTransition')) {
     $definition = $ast.Find({
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
@@ -172,6 +172,7 @@ function Get-ReadyCandidate {
     return $candidate
 }
 function Update-ConversationNavigation {}
+function Wait-RunningTransition($candidate) { return $false }
 $deadline = [DateTime]::UtcNow.AddSeconds(1)
 $previousKey = 'target'
 $script:lastReason = 'waiting_for_enabled_send_control'
@@ -276,6 +277,7 @@ function Get-ReadyCandidate {
     if ($script:prefilled) { return [pscustomobject]@{Key='target'; Invoke=$invoke} }
     return $null
 }
+function Wait-RunningTransition($candidate) { return $false }
 function Start-Sleep { param($Milliseconds) [Threading.Thread]::Sleep(5) }
 $script:deadline = [DateTime]::UtcNow.AddSeconds(3)
 $previousKey = $null
@@ -293,4 +295,25 @@ $discardedRoute = Run-HomeFixture $true $false
 Assert-True ($discardedRoute.ExitCode -eq 0 -and @($discardedRoute.Output -split "\r?\n" | Where-Object {$_ -eq 'ROUTE'}).Count -eq 2 -and @($discardedRoute.Output -split "\r?\n" | Where-Object {$_ -eq 'INVOKED'}).Count -eq 1) 'A lost route must recover without a manual click and still submit exactly once.'
 $differentDraft = Run-HomeFixture $false $true
 Assert-True ($differentDraft.ExitCode -ne 0 -and $differentDraft.Output -match 'ROUTE' -and $differentDraft.Output -notmatch 'PREFILL|INVOKED|SUBMITTED') 'Navigation into a task with a different draft must never overwrite or send it.'
-Write-Output 'PASS: PowerShell syntax, composer text fallback, Send/Steer classification, geometry, unique composer selection, bounded navigation decisions and eight isolated continuation/Home fixtures.'
+# Post-submit observation is read-only and must follow Send -> Stop in the
+# identical target composer, with two stable observations. No real UI is used.
+$sent = [pscustomobject]@{Key='target'; Kind='Send'}
+$stopped = [pscustomobject]@{Key='target'; Kind='Stop'}
+Assert-True (Test-StopControl 'Stop response') 'Stop response must be recognized.'
+Assert-True (Test-StopControl ([string][char]0x505c + [char]0x6b62)) 'Chinese Stop must be recognized.'
+Assert-True (-not (Test-StopControl 'Steer')) 'Steer alone must not prove the Send -> Stop transition.'
+Assert-True (Test-RunningTransition $sent $stopped) 'Same-composer Send -> Stop proves acceptance.'
+Assert-True (-not (Test-RunningTransition $stopped $stopped)) 'A pre-existing Stop is not a submission transition.'
+Assert-True (-not (Test-RunningTransition $sent ([pscustomobject]@{Key='other'; Kind='Stop'}))) 'A different composer Stop must not confirm this send.'
+Assert-True (-not (Test-RunningTransition $sent $null)) 'An unavailable composer must fall back to log verification.'
+$script:runningPolls = 0
+function Get-ReadyCandidate([switch]$ObserveRunning) {
+    Assert-True $ObserveRunning 'Post-submit polling must only observe running controls.'
+    $script:runningPolls++
+    if ($script:runningPolls -eq 1) { return [pscustomobject]@{Key='other';Kind='Stop'} }
+    return [pscustomobject]@{Key='target';Kind='Stop'}
+}
+function Start-Sleep { param($Milliseconds) }
+Assert-True (Wait-RunningTransition $sent) 'A stable matching Stop must confirm the submitted target.'
+Assert-True ($script:runningPolls -eq 3) 'A foreign Stop must be ignored before two matching observations.'
+Write-Output 'PASS: send-to-stop acceptance, PowerShell syntax, composer text fallback, Send/Steer classification, geometry, unique composer selection, bounded navigation decisions and eight isolated continuation/Home fixtures.'

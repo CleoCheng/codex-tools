@@ -2,7 +2,7 @@
 //!
 //! Windows App 未提供控制 socket：只读本地任务索引/rollout，导航到目标会话，
 //! 等待标题、预填“继续”的输入框及发送控件就绪，再复核原回合仍未完成后提交一次。
-//! 必须从同一 rollout 确认“继续”消息和新的 task_started，才计为续跑成功。
+//! 原生发送已确认时，同一 rollout 的新 task_started 即证明接收；发送不明时仍核对“继续”消息。
 //! 其他平台通过 App 常驻 app-server 的控制协议读取状态并追加 turn。
 //!
 //! 只处理 `source = vscode` 的用户会话和指定活动时间窗口（默认 30 分钟）；
@@ -801,6 +801,7 @@ mod tests {
 #[cfg(target_os = "windows")]
 pub(crate) enum WindowsSubmission {
     Submitted,
+    Running,
     NoLongerPending(crate::auto_switch_local::TargetState),
 }
 
@@ -923,7 +924,9 @@ pub(crate) fn wait_for_windows_continue_helper(
         return Ok(WindowsSubmission::NoLongerPending(state));
     }
     if exit_status.is_some_and(|status| status.success()) && authorized && lines.iter().any(|line| line.trim() == "SUBMITTED") {
-        Ok(WindowsSubmission::Submitted)
+        Ok(if lines.iter().any(|line| line.trim() == "RUNNING") {
+            WindowsSubmission::Running
+        } else { WindowsSubmission::Submitted })
     } else {
         let error = String::from_utf8_lossy(&errors);
         let detail = error.lines().filter(|line| !line.trim().is_empty()).take(3)
@@ -975,9 +978,11 @@ fn continue_local_windows_threads(
         }
         // Even a failed native invocation can have submitted before its response
         // was lost. Verify once; never retry an uncertain submission.
-        match crate::auto_switch_local::wait_for_new_turn(&target, Duration::from_secs(30)) {
+        let submission_confirmed = matches!(submitted, Ok(WindowsSubmission::Submitted | WindowsSubmission::Running));
+        let composer_running = matches!(submitted, Ok(WindowsSubmission::Running));
+        match crate::auto_switch_local::wait_for_acceptance(&target, Duration::from_secs(30), submission_confirmed, composer_running) {
             Ok(turn_id) => {
-                log::info!("AUTO_CONTINUE thread={} turn={turn_id} action=confirmed_in_app", target.id);
+                log::info!("AUTO_CONTINUE thread={} turn={} action=confirmed_in_app submission_confirmed={submission_confirmed} composer_running={composer_running}", target.id, turn_id.as_deref().unwrap_or("not_yet_logged"));
                 outcome.continued.push(target.label);
             }
             Err(error) => {

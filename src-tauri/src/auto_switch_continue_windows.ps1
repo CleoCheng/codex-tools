@@ -142,7 +142,12 @@ function Select-UniqueReadyCandidate([object[]]$candidates) {
     return $null
 }
 
+function Test-StopControl($name) {
+    return $name -match '^(Stop|Stop response|Stop generating|\u505c\u6b62|\u505c\u6b62\u751f\u6210|\u505c\u6b62\u54cd\u5e94)(\s*[\(\uff08].*)?$'
+}
+
 function Get-SubmitControlKind($name) {
+    if (Test-StopControl $name) { return 'Running' }
     if ($name -match '^(Send|Send message|Send prompt|Send follow-up|\u53d1\u9001|\u53d1\u9001\u6d88\u606f)(\s*[\(\uff08].*)?$') { return 'Send' }
     if ($name -match '^(Steer|Queue|Stop|Stop response|\u5f15\u5bfc|\u6392\u961f|\u505c\u6b62)(\s*[\(\uff08].*)?$') { return 'Running' }
     return 'Other'
@@ -183,7 +188,7 @@ function Update-ConversationNavigation {
     }
 }
 
-function Get-ReadyCandidate {
+function Get-ReadyCandidate([switch]$ObserveRunning) {
     $candidates = [System.Collections.Generic.List[object]]::new()
     $processes = @(Get-CodexDesktopProcesses)
     $counts = @{Windows=0; Titles=0; Editors=0; VisibleEditors=0; PromptMatches=0; MainMatches=0; SendControls=0; DisabledSend=0; RunningControls=0}
@@ -241,7 +246,7 @@ function Get-ReadyCandidate {
                     Prefilled = $composerText -eq $prompt
                     Conflicting = $composerText.Length -gt 0 -and $composerText -ne $prompt -and -not $placeholder
                 }
-                if ($composerText -ne $prompt) { continue }
+                if ($composerText -ne $prompt -and -not $ObserveRunning) { continue }
                 $counts.MainMatches++
                 $scope = $edit
                 for ($level = 0; $level -lt 4; $level++) {
@@ -259,15 +264,22 @@ function Get-ReadyCandidate {
                             $bounds.Right -gt ($composerBounds.Right + 64) -or
                             $bounds.Top -lt $composerBounds.Top -or $bounds.Bottom -gt ($composerBounds.Bottom + 120)) { continue }
                         if ($kind -eq 'Running') {
-                            if ($button.Current.IsEnabled) { $counts.RunningControls++ }
+                            if ($button.Current.IsEnabled) {
+                                $counts.RunningControls++
+                                if ($ObserveRunning -and (Test-StopControl $button.Current.Name)) {
+                                    [void]$candidates.Add([PSCustomObject]@{Key=$key; Kind='Stop'})
+                                }
+                            }
                             continue
                         }
+                        if ($ObserveRunning) { continue }
                         if (-not $button.Current.IsEnabled) { $counts.DisabledSend++; continue }
                         $counts.SendControls++
                         $invoke = $null
                         if ($button.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
                             [void]$candidates.Add([PSCustomObject]@{
                                 Key = $key
+                                Kind = 'Send'
                                 Invoke = $invoke
                             })
                         }
@@ -309,6 +321,27 @@ function Get-ReadyCandidate {
     return (Select-UniqueReadyCandidate -candidates $candidates.ToArray())
 }
 
+function Test-RunningTransition($submitted, $observed) {
+    return $null -ne $submitted -and $null -ne $observed -and
+        $submitted.Kind -eq 'Send' -and $observed.Kind -eq 'Stop' -and
+        $submitted.Key -eq $observed.Key
+}
+
+function Wait-RunningTransition($submitted) {
+    $runningDeadline = [DateTime]::UtcNow.AddSeconds(4)
+    $observedKey = $null
+    do {
+        # Read only: no navigation, prefill, second Invoke or Stop invocation.
+        $observed = Get-ReadyCandidate -ObserveRunning
+        if (Test-RunningTransition $submitted $observed) {
+            if ($observedKey -eq $observed.Key) { return $true }
+            $observedKey = $observed.Key
+        } else { $observedKey = $null }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $runningDeadline)
+    return $false
+}
+
 $deadline = [DateTime]::UtcNow.AddSeconds(110)
 $previousKey = $null
 while ([DateTime]::UtcNow -lt $deadline) {
@@ -330,6 +363,11 @@ while ([DateTime]::UtcNow -lt $deadline) {
         $verified.Invoke.Invoke()
         [Console]::Out.WriteLine('SUBMITTED')
         [Console]::Out.Flush()
+        if (Wait-RunningTransition $verified) {
+            Write-Stage 'confirmed_send_to_stop_transition'
+            [Console]::Out.WriteLine('RUNNING')
+            [Console]::Out.Flush()
+        }
         exit 0
     } else {
         $previousKey = $candidate.Key

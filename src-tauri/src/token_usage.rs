@@ -46,7 +46,7 @@ const SESSION_EXPORT_LIMIT: usize = 500;
 const TOKEN_USAGE_TAIL_SIGNATURE_BYTES: u64 = 128;
 const FORK_MATCH_RESYNC_WINDOW: usize = 32;
 const FORK_MATCH_ANCHOR_RECORDS: usize = 4;
-const COST_ANALYTICS_CACHE_VERSION: u8 = 12;
+const COST_ANALYTICS_CACHE_VERSION: u8 = 13;
 const COST_SOURCE_LOCAL: &str = "local_estimate";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -408,6 +408,7 @@ fn build_codex_token_usage_snapshot(
             history_parent_id: file.parent_session_id.as_deref(),
             agent_parent_id: file.parent_thread_id.as_deref(),
             identity_trusted: file.identity_trusted,
+            paginated_history: file.paginated_history.as_ref(),
             record_hashes: &file.record_hashes,
             record_resync_window: FORK_MATCH_RESYNC_WINDOW,
         })
@@ -553,12 +554,46 @@ fn latest_confirmed_token_session(
     })
 }
 
+/// Paginated subagents explicitly mark the first ordinal belonging to their
+/// own history. Copied context can be rewritten and need not hash like its parent.
+#[derive(Debug, Clone)]
+struct PaginatedHistory {
+    start_ordinal: u64,
+    own_record_start: Option<usize>,
+    last_ordinal: Option<u64>,
+    invalid: bool,
+}
+
+impl PaginatedHistory {
+    fn new(start_ordinal: u64) -> Self {
+        Self { start_ordinal, own_record_start: None, last_ordinal: None, invalid: false }
+    }
+
+    fn observe(&mut self, line: &str, record_index: usize) {
+        if self.invalid || self.own_record_start.is_some() { return; }
+        #[derive(Deserialize)]
+        struct Envelope { ordinal: Option<u64> }
+        // Deserialize only the envelope, skipping potentially large prompt payloads.
+        let ordinal = serde_json::from_str::<Envelope>(line).ok().and_then(|row| row.ordinal);
+        let Some(ordinal) = ordinal else { self.invalid = true; return; };
+        if self.last_ordinal.is_some_and(|previous| ordinal <= previous) {
+            self.invalid = true;
+            return;
+        }
+        self.last_ordinal = Some(ordinal);
+        if ordinal >= self.start_ordinal {
+            self.own_record_start = Some(record_index);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct LineageNode<'a> {
     thread_id: &'a str,
     history_parent_id: Option<&'a str>,
     agent_parent_id: Option<&'a str>,
     identity_trusted: bool,
+    paginated_history: Option<&'a PaginatedHistory>,
     record_hashes: &'a [u64],
     record_resync_window: usize,
 }
@@ -589,6 +624,12 @@ fn derive_session_ownerships(nodes: &[LineageNode<'_>]) -> Vec<SessionOwnership>
                 return SessionOwnership {
                     unresolved: true,
                     ..SessionOwnership::default()
+                };
+            }
+            if let Some(history) = child.paginated_history {
+                return SessionOwnership {
+                    inherited_record_end: history.own_record_start.unwrap_or(child.record_hashes.len()),
+                    unresolved: history.invalid,
                 };
             }
             let Some(history_parent_id) = child.history_parent_id else {
@@ -1116,11 +1157,12 @@ struct ParsedTokenSessionFile {
     model_provider: Option<String>,
     /// Codex 内部线程来源，例如 `guardian_review`、`user`。
     thread_source: Option<String>,
-    /// 子代理会话（guardian 等）不是用户任务，不能计入账号用量。
+    /// 标记子代理来源；其独立模型用量仍计入账号统计。
     is_subagent: bool,
     /// 会话当前使用的 provider；`thread_settings_applied` 变化时更新。
     current_provider: Option<String>,
     identity_trusted: bool,
+    paginated_history: Option<PaginatedHistory>,
     header_checked: bool,
     record_hashes: Vec<u64>,
     events: Vec<ParsedTokenEvent>,
@@ -1137,6 +1179,7 @@ struct ParsedAnalyticsSessionFile {
     filename_session_id: Option<String>,
     parent_thread_id: Option<String>,
     identity_trusted: bool,
+    paginated_history: Option<PaginatedHistory>,
     record_hashes: Vec<u64>,
     events: Vec<AnalyticsTokenEvent>,
     prompt_keys: Vec<String>,
@@ -1204,6 +1247,7 @@ impl AnalyticsFileState {
                 filename_session_id,
                 parent_thread_id: None,
                 identity_trusted: false,
+                paginated_history: None,
                 record_hashes: Vec::new(),
                 events: Vec::new(),
                 prompt_keys: Vec::new(),
@@ -1439,6 +1483,10 @@ fn parse_cost_analytics_lines<R: BufRead>(
                     .map(|filename_id| filename_id == id)
                     .unwrap_or(true);
             }
+            state.parsed.paginated_history = metadata.history_start_ordinal.map(PaginatedHistory::new);
+            if let Some(history) = state.parsed.paginated_history.as_mut() {
+                history.observe(&line, record_index);
+            }
             state.parsed.payload_session_id = metadata.payload_session_id;
             state.parsed.session.parent_session_id = metadata.forked_from_id;
             state.parsed.parent_thread_id = metadata.parent_thread_id;
@@ -1449,6 +1497,9 @@ fn parse_cost_analytics_lines<R: BufRead>(
                 state.current_model = model.to_string();
             }
             continue;
+        }
+        if let Some(history) = state.parsed.paginated_history.as_mut() {
+            history.observe(&line, record_index);
         }
         if root_type == "session_meta" {
             // Forked rollout files may replay the parent's session_meta and even
@@ -1577,6 +1628,7 @@ fn apply_analytics_lineage_ownership(
             history_parent_id: file.session.parent_session_id.as_deref(),
             agent_parent_id: file.parent_thread_id.as_deref(),
             identity_trusted: file.identity_trusted,
+            paginated_history: file.paginated_history.as_ref(),
             record_hashes: &file.record_hashes,
             record_resync_window: FORK_MATCH_RESYNC_WINDOW,
         })
@@ -1757,6 +1809,7 @@ fn parse_token_session_file(path: &Path) -> Result<CachedTokenUsageFile, String>
         is_subagent: false,
         current_provider: None,
         identity_trusted: false,
+        paginated_history: None,
         header_checked: false,
         record_hashes: Vec::new(),
         events: Vec::new(),
@@ -1866,6 +1919,10 @@ fn parse_token_session_lines<R: BufRead>(
                         .map(|filename_id| filename_id == session_id)
                         .unwrap_or(true);
                 }
+                parsed.paginated_history = metadata.history_start_ordinal.map(PaginatedHistory::new);
+                if let Some(history) = parsed.paginated_history.as_mut() {
+                    history.observe(&line, record_index);
+                }
                 parsed.payload_session_id = metadata.payload_session_id;
                 parsed.parent_session_id = metadata.forked_from_id;
                 parsed.parent_thread_id = metadata.parent_thread_id;
@@ -1877,6 +1934,9 @@ fn parse_token_session_lines<R: BufRead>(
                 parsed.response_boundary_ms = line_timestamp_ms(&line);
             }
             continue;
+        }
+        if let Some(history) = parsed.paginated_history.as_mut() {
+            history.observe(&line, record_index);
         }
         if line.contains("\"thread_settings_applied\"") {
             if let Some(provider) = thread_settings_provider(&line) {
@@ -1936,9 +1996,12 @@ struct ParsedSessionMetadata {
     model_provider: Option<String>,
     thread_source: Option<String>,
     is_subagent: bool,
+    history_start_ordinal: Option<u64>,
 }
 
 fn parse_session_metadata_payload(payload: &Value) -> ParsedSessionMetadata {
+    let is_subagent = payload.get("source").and_then(Value::as_object)
+        .is_some_and(|source| source.contains_key("subagent"));
     ParsedSessionMetadata {
         payload_id: payload
             .get("id")
@@ -1974,9 +2037,9 @@ fn parse_session_metadata_payload(payload: &Value) -> ParsedSessionMetadata {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string),
-        is_subagent: payload.get("source").and_then(Value::as_object).is_some_and(|source| {
-            source.contains_key("subagent")
-        }),
+        is_subagent,
+        history_start_ordinal: (is_subagent && payload["history_mode"] == "paginated")
+            .then(|| payload["subagent_history_start_ordinal"].as_u64()).flatten(),
     }
 }
 
@@ -2023,10 +2086,12 @@ fn fast_record_hash(line: &str) -> u64 {
 
         let mut start = key_start;
         let mut end = value_end;
-        if start > 0 && line.as_bytes()[start - 1] == b',' {
-            start -= 1;
-        } else if line.as_bytes().get(end) == Some(&b',') {
+        // Prefer the following separator so removing adjacent leading envelope
+        // fields produces the same stream as an older schema without them.
+        if line.as_bytes().get(end) == Some(&b',') {
             end += 1;
+        } else if start > 0 && line.as_bytes()[start - 1] == b',' {
+            start -= 1;
         }
         Some((start, end))
     }
@@ -2075,6 +2140,12 @@ fn fast_record_hash(line: &str) -> u64 {
     if let Some(range) = field_range(line, "timestamp", true) {
         ranges.push(range);
     }
+    // Rollout-local ordinals are reassigned when inherited records are copied.
+    // Limit the search to the envelope so payload fields still affect identity.
+    let envelope_end = line.find("\"payload\":").unwrap_or(line.len());
+    if let Some(range) = field_range(&line[..envelope_end], "ordinal", false) {
+        ranges.push(range);
+    }
     let probe_end = floor_char_boundary(line, line.len().min(2 * 1024));
     let probe = &line[..probe_end];
     if line.len() <= FULL_HASH_BYTES {
@@ -2109,7 +2180,15 @@ fn fast_record_hash(line: &str) -> u64 {
         }
     }
     ranges.sort_unstable();
-    ranges.dedup();
+    let mut merged_ranges: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in ranges {
+        if let Some(previous) = merged_ranges.last_mut().filter(|previous| start <= previous.1) {
+            previous.1 = previous.1.max(end);
+        } else {
+            merged_ranges.push((start, end));
+        }
+    }
+    let ranges = merged_ranges;
 
     let trimmed_end = line.trim_end().len();
     let removed_length = ranges
@@ -2149,6 +2228,7 @@ fn normalize_record_for_fork_match(root: &mut Value) {
     // semantic record. It may also regenerate response IDs and add newer
     // schema fields whose default value carries no historical information.
     root_object.remove("timestamp");
+    root_object.remove("ordinal");
     let Some(payload) = root_object
         .get_mut("payload")
         .and_then(Value::as_object_mut)
@@ -3496,6 +3576,68 @@ mod tests {
             matching_record_prefix(&[1, 2, 3, 4, 5], &[6], FORK_MATCH_RESYNC_WINDOW),
             0
         );
+    }
+
+    #[test]
+    fn paginated_fork_ordinals_do_not_change_record_identity() {
+        let parent = r#"{"timestamp":"2026-07-09T20:58:47Z","ordinal":10,"type":"event_msg","payload":{"type":"task_started","turn_id":"same"}}"#;
+        let child = r#"{"timestamp":"2026-07-24T22:04:45Z","ordinal":200,"type":"event_msg","payload":{"type":"task_started","turn_id":"same"}}"#;
+        let legacy = r#"{"timestamp":"2026-07-09T20:58:47Z","type":"event_msg","payload":{"type":"task_started","turn_id":"same"}}"#;
+        assert_eq!(fast_record_hash(parent), fast_record_hash(child));
+        assert_eq!(fast_record_hash(parent), fast_record_hash(legacy));
+        let nested_a = r#"{"timestamp":"now","type":"event_msg","payload":{"ordinal":1}}"#;
+        let nested_b = r#"{"timestamp":"now","type":"event_msg","payload":{"ordinal":2}}"#;
+        assert_ne!(fast_record_hash(nested_a), fast_record_hash(nested_b));
+    }
+
+    #[test]
+    fn paginated_subagent_counts_own_usage_without_matching_rewritten_parent_context() {
+        let root = unique_temp_dir();
+        fs::create_dir_all(&root).unwrap();
+        let header = serde_json::json!({
+            "timestamp":"2026-07-14T14:00:00Z", "ordinal":0, "type":"session_meta",
+            "payload": {"id":"agent", "forked_from_id":"unavailable-parent",
+                "creator_account_id":"account-a", "source":{"subagent":{}},
+                "history_mode":"paginated", "subagent_history_start_ordinal":3}
+        }).to_string();
+        // This inherited usage cannot be matched to the absent/rewritten parent.
+        // The explicit ordinal still proves that it must be excluded.
+        let ordinal = |line: String, value: u64| {
+            let mut row: Value = serde_json::from_str(&line).unwrap();
+            row["ordinal"] = value.into();
+            row.to_string()
+        };
+        let lines = [header,
+            ordinal(event_line("2026-07-14T14:00:01Z", 100, 100), 1),
+            serde_json::json!({"ordinal":2,"type":"response_item","payload":{"type":"message","role":"user","content":[]}}).to_string(),
+            ordinal(event_line("2026-07-14T14:01:00Z", 150, 50), 3),
+            ordinal(event_line("2026-07-14T14:02:00Z", 180, 30), 4),
+        ];
+        fs::write(root.join("rollout-agent.jsonl"), lines.join("\n")).unwrap();
+        let now = parse_timestamp("2026-07-15T00:00:00Z").unwrap();
+        let tokens = scan_codex_token_usage_roots(&[root.clone()], now);
+        assert_eq!(tokens.unresolved_fork_count, 0);
+        assert_eq!(tokens.event_count, 2);
+        assert_eq!(tokens.last_7d.total_tokens, 80);
+        assert_eq!(tokens.accounts[0].last_7d.total_tokens, 80);
+        let analytics = scan_codex_cost_analytics_roots_with_progress(&[root.clone()], now, None, |_| {});
+        assert_eq!(analytics.unresolved_fork_count, 0);
+        assert_eq!(analytics.total.total_tokens, 80);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn paginated_history_requires_real_envelope_ordinals_and_survives_incremental_loading() {
+        let mut history = PaginatedHistory::new(3);
+        history.observe(r#"{"ordinal":0}"#, 0);
+        history.observe(r#"{"ordinal":1}"#, 1);
+        assert!(history.own_record_start.is_none());
+        history.observe(r#"{"ordinal":3}"#, 2);
+        assert_eq!(history.own_record_start, Some(2), "ordinal is not a physical line index");
+        let mut corrupt = PaginatedHistory::new(3);
+        corrupt.observe(r#"{"ordinal":0}"#, 0);
+        corrupt.observe(r#"{"payload":{"ordinal":3}}"#, 1);
+        assert!(corrupt.invalid, "payload ordinals must never establish the own-history boundary");
     }
 
     #[test]

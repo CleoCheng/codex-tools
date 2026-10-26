@@ -273,10 +273,12 @@ impl SendConfirmation {
     }
 }
 
-pub(crate) fn wait_for_new_turn(
+pub(crate) fn wait_for_acceptance(
     target: &LocalContinueTarget,
     timeout: Duration,
-) -> Result<String, String> {
+    submission_confirmed: bool,
+    composer_running: bool,
+) -> Result<Option<String>, String> {
     let deadline = Instant::now() + timeout;
     let mut offset = target.snapshot.offset;
     let mut confirmation = SendConfirmation::default();
@@ -288,14 +290,20 @@ pub(crate) fn wait_for_new_turn(
         if let Some(error) = confirmation.failure {
             return Err(error);
         }
-        if confirmation.user_message {
-            if let Some(turn_id) = confirmation.new_turn_id.as_ref() {
-                let started = *confirmed_at.get_or_insert_with(Instant::now);
-                // Allow promptly written quota/auth failures to arrive before
-                // reporting acceptance. Later task failures remain App results.
-                if timeout.is_zero() || started.elapsed() >= Duration::from_secs(1) || Instant::now() >= deadline {
-                    return Ok(turn_id.clone());
-                }
+        // Auto-compaction starts after task_started but before the user message
+        // is persisted. A confirmed native submit plus this target's new turn
+        // proves acceptance even if compaction takes minutes. An uncertain
+        // native submit still requires the actual continue message in the log.
+        // A stable Send -> Stop transition in this same composer also proves
+        // acceptance when rollout persistence is delayed.
+        if (submission_confirmed && composer_running)
+            || ((submission_confirmed || confirmation.user_message) && confirmation.new_turn_id.is_some())
+        {
+            let started = *confirmed_at.get_or_insert_with(Instant::now);
+            // Allow promptly written quota/auth failures to arrive before
+            // reporting acceptance. Later task failures remain App results.
+            if timeout.is_zero() || started.elapsed() >= Duration::from_secs(1) || Instant::now() >= deadline {
+                return Ok(confirmation.new_turn_id.clone());
             }
         }
         if Instant::now() >= deadline {
@@ -421,13 +429,37 @@ mod tests {
         writeln!(file, "{}", event("task_started", "old")).unwrap();
         let mut target = LocalContinueTarget { id, label: "target".into(), rollout_path: path.clone(), snapshot: read_snapshot(&path).unwrap() };
         assert_eq!(refresh_snapshot(&mut target).unwrap(), TargetState::NeedsContinue);
-        assert!(wait_for_new_turn(&target, Duration::ZERO).is_err());
+        assert!(wait_for_acceptance(&target, Duration::ZERO, false, false).is_err());
         writeln!(file, "{}", event("task_started", "new")).unwrap();
         writeln!(file, "{}", json!({"type":"event_msg","payload":{"type":"user_message","message":"继续"}})).unwrap();
-        assert_eq!(wait_for_new_turn(&target, Duration::ZERO).unwrap(), "new");
+        assert_eq!(wait_for_acceptance(&target, Duration::ZERO, false, false).unwrap().as_deref(), Some("new"));
         assert_eq!(refresh_snapshot(&mut target).unwrap(), TargetState::Replaced, "a replacement turn must not be sent another continue");
         writeln!(file, "{}", event("task_complete", "new")).unwrap();
         assert_eq!(refresh_snapshot(&mut target).unwrap(), TargetState::Completed);
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn confirmed_submit_accepts_new_turn_while_compaction_delays_the_user_message() {
+        let path = std::env::temp_dir().join(format!("codex-compact-{}.jsonl", uuid::Uuid::new_v4()));
+        let mut file = File::create(&path).unwrap();
+        writeln!(file, "{}", event("task_started", "old")).unwrap();
+        let target = LocalContinueTarget { id: "target".into(), label: "target".into(), rollout_path: path.clone(), snapshot: read_snapshot(&path).unwrap() };
+        assert!(wait_for_acceptance(&target, Duration::ZERO, true, false).is_err(), "native submission alone is insufficient");
+        assert_eq!(wait_for_acceptance(&target, Duration::ZERO, true, true).unwrap(), None,
+            "a verified Send -> Stop transition proves acceptance before rollout writes");
+        assert!(wait_for_acceptance(&target, Duration::ZERO, false, true).is_err(),
+            "running UI without a confirmed submission must not prove acceptance");
+        writeln!(file, "{}", event("task_started", "new-compacting-turn")).unwrap();
+        // Production writes only this record until the multi-minute compaction
+        // completes; the user message and ContextCompaction item arrive later.
+        assert_eq!(wait_for_acceptance(&target, Duration::ZERO, true, false).unwrap().as_deref(), Some("new-compacting-turn"));
+        assert!(wait_for_acceptance(&target, Duration::ZERO, false, false).is_err(), "an uncertain send still needs the actual message");
+        writeln!(file, "{}", event("turn_aborted", "old")).unwrap();
+        assert!(wait_for_acceptance(&target, Duration::ZERO, true, false).is_ok(), "old-turn errors must not override acceptance");
+        writeln!(file, "{}", event("turn_aborted", "new-compacting-turn")).unwrap();
+        assert!(wait_for_acceptance(&target, Duration::ZERO, true, false).unwrap_err().contains("中断"));
         drop(file);
         std::fs::remove_file(path).unwrap();
     }
