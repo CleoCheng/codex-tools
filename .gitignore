@@ -31,3 +31,22 @@ src-tauri/gen/
 .dev-runtime/
 .codex-verification/
 npm/ctc-*/bin/
+
+# Local credentials and runtime account exports
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.sample
+auth.json
+accounts.json
+api-proxy.key
+*.pem
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+/.codex/
+
+# Nested Cargo builds also contain machine-specific paths
+**/target/
