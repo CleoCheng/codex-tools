@@ -1,6 +1,11 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$script:invokeAttempted = $false
 trap {
+    if (-not $script:invokeAttempted) {
+        [Console]::Out.WriteLine('NOT_SUBMITTED')
+        [Console]::Out.Flush()
+    }
     # EncodedCommand otherwise serializes exceptions/progress as CLIXML and
     # hides the useful failure behind hundreds of characters of markup.
     [Console]::Error.WriteLine($_.Exception.Message)
@@ -394,7 +399,7 @@ while ([DateTime]::UtcNow -lt $deadline) {
     if ($null -eq $candidate) {
         $previousKey = $null
         Update-ConversationNavigation
-    } elseif ($previousKey -eq $candidate.Key) {
+    } elseif ($previousKey -eq ($candidate.Key + ':' + $candidate.ControlKey)) {
         # The parent refreshes the task state after navigation, immediately before authorizing a single submit.
         [Console]::Out.WriteLine('READY')
         [Console]::Out.Flush()
@@ -402,9 +407,20 @@ while ([DateTime]::UtcNow -lt $deadline) {
         # Re-query after the handshake: navigation, edits, disabled buttons or running turns revoke readiness.
         $verified = Get-ReadyCandidate
         if ($null -eq $verified -or $verified.Key -ne $candidate.Key -or $verified.ControlKey -ne $candidate.ControlKey) {
-            throw 'The verified conversation composer changed before submission.'
+            # The goal bar or tab can mount between READY and SUBMIT. No
+            # Invoke happened, so revoke authorization and wait for fresh
+            # readiness; the parent must recheck the original task each time.
+            [Console]::Out.WriteLine('REVOKED')
+            [Console]::Out.Flush()
+            Write-Stage 'readiness_revoked_before_invoke'
+            $previousKey = $null
+            Start-Sleep -Milliseconds 400
+            continue
         }
         # Never retry Invoke: even an exception can mean the App already accepted the message.
+        $script:invokeAttempted = $true
+        [Console]::Out.WriteLine('INVOKING')
+        [Console]::Out.Flush()
         $verified.Invoke.Invoke()
         [Console]::Out.WriteLine('SUBMITTED')
         [Console]::Out.Flush()
@@ -415,7 +431,7 @@ while ([DateTime]::UtcNow -lt $deadline) {
         }
         exit 0
     } else {
-        $previousKey = $candidate.Key
+        $previousKey = $candidate.Key + ':' + $candidate.ControlKey
     }
     Start-Sleep -Milliseconds 400
 }

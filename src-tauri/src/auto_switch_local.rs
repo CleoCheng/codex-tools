@@ -515,6 +515,37 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "windows")]
+    fn helper_reauthorizes_revoked_readiness_and_distinguishes_invoke_failures() {
+        use crate::auto_switch_continue::{wait_for_windows_continue_helper, WindowsSubmission};
+        use std::process::Stdio;
+        for mode in ["recover", "abort", "uncertain"] {
+            let path = std::env::temp_dir().join(format!("codex-revoke-{}.jsonl", uuid::Uuid::new_v4()));
+            let mut file = File::create(&path).unwrap();
+            writeln!(file, "{}", json!({"type":"session_meta","payload":{"id":"target"}})).unwrap();
+            writeln!(file, "{}", event("task_started", "original")).unwrap();
+            let mut target = LocalContinueTarget { id: "target".into(), label: "target".into(), rollout_path: path.clone(), snapshot: read_snapshot(&path).unwrap() };
+            // This helper has no UI APIs. It only exercises the pipe protocol.
+            let script = match mode {
+                "recover" => "[Console]::Out.WriteLine('READY'); if ([Console]::In.ReadLine() -ne 'SUBMIT') { exit 2 }; [Console]::Out.WriteLine('REVOKED'); [Console]::Out.WriteLine('READY'); if ([Console]::In.ReadLine() -ne 'SUBMIT') { exit 3 }; [Console]::Out.WriteLine('INVOKING'); [Console]::Out.WriteLine('SUBMITTED'); [Console]::Out.WriteLine('RUNNING')",
+                "abort" => "[Console]::Out.WriteLine('READY'); [void][Console]::In.ReadLine(); [Console]::Out.WriteLine('NOT_SUBMITTED'); [Console]::Error.WriteLine('changed before invoke'); exit 1",
+                _ => "[Console]::Out.WriteLine('READY'); [void][Console]::In.ReadLine(); [Console]::Out.WriteLine('INVOKING'); [Console]::Error.WriteLine('uncertain invoke'); exit 1",
+            };
+            let child = crate::utils::new_background_command("powershell.exe")
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
+                .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+            let result = wait_for_windows_continue_helper(&mut target, child, Duration::from_secs(5));
+            match mode {
+                "recover" => assert!(matches!(result, Ok(WindowsSubmission::Running))),
+                "abort" => assert!(matches!(result, Ok(WindowsSubmission::NotSubmitted(reason)) if reason.contains("未发送继续"))),
+                _ => assert!(result.is_err(), "an attempted Invoke must remain uncertain and never qualify for another submit"),
+            }
+            drop(file);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
     fn waiting_helper_exits_on_task_changes_even_when_it_never_emits_ready() {
         use crate::auto_switch_continue::{wait_for_windows_continue_helper, WindowsSubmission};
         use std::process::Stdio;

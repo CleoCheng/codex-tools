@@ -876,6 +876,13 @@ pub(crate) fn wait_for_windows_continue_helper(
                     last_stage = line;
                     continue;
                 }
+                if line.trim() == "REVOKED" {
+                    // The child revalidated the UI and did not invoke Send.
+                    // Keep stdin open for a fresh READY/SUBMIT handshake.
+                    authorized = false;
+                    next_refresh = std::time::Instant::now();
+                    continue;
+                }
                 if line.trim() != "READY" { continue; }
                 if authorized {
                     return Err("任务就绪检查返回了重复的发送请求，已停止".to_string());
@@ -886,7 +893,7 @@ pub(crate) fn wait_for_windows_continue_helper(
                 let incomplete = state == crate::auto_switch_local::TargetState::NeedsContinue;
                 if !incomplete { no_longer_pending = Some(state); }
                 authorized = incomplete;
-                let mut input = child.stdin.take().ok_or("任务就绪检查输入通道已关闭")?;
+                let input = child.stdin.as_mut().ok_or("任务就绪检查输入通道已关闭")?;
                 writeln!(input, "{}", if incomplete { "SUBMIT" } else { "CANCEL" })
                     .and_then(|_| input.flush())
                     .map_err(|error| format!("发送任务就绪确认失败: {error}"))?;
@@ -920,8 +927,10 @@ pub(crate) fn wait_for_windows_continue_helper(
     let _ = child.wait();
     let lines = stdout_reader.join().unwrap_or_default();
     let errors = stderr_reader.join().unwrap_or_default();
+    let invoked = lines.iter().any(|line| matches!(line.trim(), "INVOKING" | "SUBMITTED"));
+    let explicitly_not_submitted = !invoked && lines.iter().any(|line| line.trim() == "NOT_SUBMITTED");
     if let Err(error) = result {
-        return if authorized { Err(error) } else {
+        return if (authorized || invoked) && !explicitly_not_submitted { Err(error) } else {
             Ok(WindowsSubmission::NotSubmitted(format!("未进入发送阶段，未发送继续：{error}")))
         };
     }
@@ -936,7 +945,7 @@ pub(crate) fn wait_for_windows_continue_helper(
         let error = String::from_utf8_lossy(&errors);
         let detail = error.lines().filter(|line| !line.trim().is_empty()).take(3)
             .collect::<Vec<_>>().join(" ").chars().take(500).collect::<String>();
-        if authorized {
+        if (authorized || invoked) && !explicitly_not_submitted {
             Err(format!("Codex 发送结果不明：{detail}；{last_stage}"))
         } else {
             Ok(WindowsSubmission::NotSubmitted(format!("目标会话的发送控件未就绪，未发送继续：{detail}；{last_stage}")))

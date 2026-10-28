@@ -230,7 +230,7 @@ $timeoutText = @($ast.EndBlock.Statements | Where-Object {
 })[-1].Extent.Text
 $powerShell = (Get-Command powershell.exe).Source
 
-function Run-Fixture($reply, $changed, $invokeThrows, $neverReady, $buttonChanged = $false) {
+function Run-Fixture($reply, $changed, $invokeThrows, $neverReady, $buttonChanged = $false, $transient = $false) {
     $fixture = @'
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -243,20 +243,24 @@ $invoke | Add-Member -MemberType ScriptMethod -Name Invoke -Value {
 $candidate = [pscustomobject]@{Key='target'; ControlKey='button-a'; Invoke=$invoke}
 function Get-ReadyCandidate {
     $script:counter++
+    if ($script:counter -gt 12) { $script:deadline = [DateTime]::UtcNow.AddSeconds(-1) }
     if (NEVER_READY) { return $null }
-    if (BUTTON_CHANGED -and $script:counter -gt 1) { return [pscustomobject]@{Key='target'; ControlKey='button-b'; Invoke=$invoke} }
-    if (CHANGED -and $script:counter -gt 1) { return [pscustomobject]@{Key='other'; Invoke=$invoke} }
+    if (BUTTON_CHANGED -and $script:counter -gt 1 -and (-not TRANSIENT -or $script:counter -eq 2)) { return [pscustomobject]@{Key='target'; ControlKey='button-b'; Invoke=$invoke} }
+    if (CHANGED -and $script:counter -gt 1 -and (-not TRANSIENT -or $script:counter -eq 2)) { return [pscustomobject]@{Key='other'; Invoke=$invoke} }
     return $candidate
 }
 function Update-ConversationNavigation {}
+function Write-Stage($stage) { [Console]::Out.WriteLine('TRACE stage=' + $stage) }
+function Start-Sleep { param($Milliseconds) [Threading.Thread]::Sleep(5) }
 function Wait-RunningTransition($candidate) { return $false }
 $deadline = [DateTime]::UtcNow.AddSeconds(1)
-$previousKey = 'target'
+$previousKey = 'target:button-a'
 $script:lastReason = 'waiting_for_enabled_send_control'
 '@
     $fixture = $fixture.Replace('INVOKE_THROWS', ('$' + $invokeThrows.ToString().ToLowerInvariant()))
     $fixture = $fixture.Replace('NEVER_READY', ('$' + $neverReady.ToString().ToLowerInvariant()))
     $fixture = $fixture.Replace('BUTTON_CHANGED', ('$' + $buttonChanged.ToString().ToLowerInvariant()))
+    $fixture = $fixture.Replace('TRANSIENT', ('$' + $transient.ToString().ToLowerInvariant()))
     $fixture = $fixture.Replace('CHANGED', ('$' + $changed.ToString().ToLowerInvariant()))
     $fixture += [Environment]::NewLine + $trapText + [Environment]::NewLine + $loopText + [Environment]::NewLine + $timeoutText
     return (Run-IsolatedFixture $fixture $reply)
@@ -293,15 +297,16 @@ $cancel = Run-Fixture 'CANCEL' $false $false $false
 Assert-True ($cancel.ExitCode -eq 0 -and $cancel.Output -match 'READY' -and $cancel.Output -notmatch 'INVOKED|SUBMITTED') 'Cancelled/completed tasks must never submit.'
 $submit = Run-Fixture 'SUBMIT' $false $false $false
 Assert-True ($submit.ExitCode -eq 0 -and $submit.Output -match 'SUBMITTED' -and @($submit.Output -split "\r?\n" | Where-Object {$_ -eq 'INVOKED'}).Count -eq 1) 'A verified task must be invoked exactly once.'
-$changed = Run-Fixture 'SUBMIT' $true $false $false
-Assert-True ($changed.ExitCode -ne 0 -and $changed.Output -notmatch 'INVOKED|SUBMITTED') 'A changed composer must revoke readiness.'
-Assert-True ($changed.Errors -match 'changed before submission' -and $changed.Errors -notmatch 'CLIXML|<Objs') 'The useful failure must remain plain text, not serialized PowerShell markup.'
-$changedButton = Run-Fixture 'SUBMIT' $false $false $false $true
-Assert-True ($changedButton.ExitCode -ne 0 -and $changedButton.Output -notmatch 'INVOKED|SUBMITTED') 'The same composer with a replacement Send control must revoke readiness.'
+$changed = Run-Fixture "SUBMIT`nCANCEL" $true $false $false
+Assert-True ($changed.ExitCode -eq 0 -and $changed.Output -match 'REVOKED' -and $changed.Output -notmatch 'INVOKING|INVOKED|SUBMITTED') 'A changed composer must revoke readiness and require fresh parent authorization.'
+$changedButton = Run-Fixture "SUBMIT`nCANCEL" $false $false $false $true
+Assert-True ($changedButton.ExitCode -eq 0 -and $changedButton.Output -match 'REVOKED' -and $changedButton.Output -notmatch 'INVOKING|INVOKED|SUBMITTED') 'The same composer with a replacement Send control must revoke readiness.'
+$recovered = Run-Fixture "SUBMIT`nSUBMIT" $false $false $false $true $true
+Assert-True ($recovered.ExitCode -eq 0 -and $recovered.Output -match 'REVOKED[\s\S]*READY[\s\S]*INVOKING[\s\S]*INVOKED[\s\S]*SUBMITTED' -and @($recovered.Output -split "\r?\n" | Where-Object {$_ -eq 'INVOKED'}).Count -eq 1) 'A goal/tab re-render before Invoke must recover through fresh readiness and submit only once.'
 $uncertain = Run-Fixture 'SUBMIT' $false $true $false
-Assert-True ($uncertain.ExitCode -ne 0 -and @($uncertain.Output -split "\r?\n" | Where-Object {$_ -eq 'INVOKED'}).Count -eq 1 -and $uncertain.Output -notmatch 'SUBMITTED') 'An uncertain invocation must not be retried.'
+Assert-True ($uncertain.Output -match 'INVOKING' -and $uncertain.Output -notmatch 'NOT_SUBMITTED|REVOKED' -and $uncertain.ExitCode -ne 0 -and @($uncertain.Output -split "\r?\n" | Where-Object {$_ -eq 'INVOKED'}).Count -eq 1 -and $uncertain.Output -notmatch 'SUBMITTED') 'An uncertain invocation must not be retried.'
 $loading = Run-Fixture 'SUBMIT' $false $false $true
-Assert-True ($loading.Output -notmatch 'READY|INVOKED|SUBMITTED') 'An unloaded task must never accept permission to submit.'
+Assert-True ($loading.Output -match 'NOT_SUBMITTED' -and $loading.Output -notmatch 'READY|INVOKING|INVOKED') 'An unloaded task must never accept permission to submit.'
 Assert-True ($loading.ExitCode -ne 0 -and $loading.Errors -match 'Timed out.*waiting_for_enabled_send_control' -and $loading.Errors -notmatch 'CLIXML|<Objs') 'Readiness timeout must report the actual stage as a plain-text error.'
 
 # Run the real navigation/update/handshake loop with a fake Home and link opener.
@@ -374,7 +379,7 @@ Assert-True ($fromHome.ExitCode -eq 0 -and $fromHome.Output -match 'ROUTE[\s\S]*
 $discardedRoute = Run-HomeFixture $true $false
 Assert-True ($discardedRoute.ExitCode -eq 0 -and @($discardedRoute.Output -split "\r?\n" | Where-Object {$_ -eq 'ROUTE'}).Count -eq 2 -and @($discardedRoute.Output -split "\r?\n" | Where-Object {$_ -eq 'INVOKED'}).Count -eq 1) 'A lost route must recover without a manual click and still submit exactly once.'
 $differentDraft = Run-HomeFixture $false $true
-Assert-True ($differentDraft.ExitCode -ne 0 -and $differentDraft.Output -match 'ROUTE' -and $differentDraft.Output -notmatch 'PREFILL|INVOKED|SUBMITTED') 'Navigation into a task with a different draft must never overwrite or send it.'
+Assert-True ($differentDraft.ExitCode -ne 0 -and $differentDraft.Output -match 'ROUTE' -and $differentDraft.Output -notmatch 'PREFILL|INVOKING|INVOKED|(?m)^SUBMITTED\r?$') 'Navigation into a task with a different draft must never overwrite or send it.'
 # Post-submit observation is read-only and must follow Send -> Stop in the
 # identical target composer, with two stable observations. No real UI is used.
 $sent = [pscustomobject]@{Key='target'; Kind='Send'}
@@ -396,4 +401,4 @@ function Get-ReadyCandidate([switch]$ObserveRunning) {
 function Start-Sleep { param($Milliseconds) }
 Assert-True (Wait-RunningTransition $sent) 'A stable matching Stop must confirm the submitted target.'
 Assert-True ($script:runningPolls -eq 3) 'A foreign Stop must be ignored before two matching observations.'
-Write-Output 'PASS: tabbed/inline composer scope, send-to-stop acceptance, PowerShell syntax, composer text fallback, Send/Steer classification, geometry, unique composer selection, bounded navigation decisions and nine isolated continuation/Home fixtures.'
+Write-Output 'PASS: tabbed/inline composer scope, send-to-stop acceptance, PowerShell syntax, composer text fallback, Send/Steer classification, geometry, unique composer selection, bounded navigation decisions and ten isolated continuation/Home/revocation fixtures.'
