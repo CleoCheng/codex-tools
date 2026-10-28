@@ -802,6 +802,7 @@ mod tests {
 pub(crate) enum WindowsSubmission {
     Submitted,
     Running,
+    NotSubmitted(String),
     NoLongerPending(crate::auto_switch_local::TargetState),
 }
 
@@ -919,7 +920,11 @@ pub(crate) fn wait_for_windows_continue_helper(
     let _ = child.wait();
     let lines = stdout_reader.join().unwrap_or_default();
     let errors = stderr_reader.join().unwrap_or_default();
-    result?;
+    if let Err(error) = result {
+        return if authorized { Err(error) } else {
+            Ok(WindowsSubmission::NotSubmitted(format!("未进入发送阶段，未发送继续：{error}")))
+        };
+    }
     if let Some(state) = no_longer_pending {
         return Ok(WindowsSubmission::NoLongerPending(state));
     }
@@ -931,7 +936,11 @@ pub(crate) fn wait_for_windows_continue_helper(
         let error = String::from_utf8_lossy(&errors);
         let detail = error.lines().filter(|line| !line.trim().is_empty()).take(3)
             .collect::<Vec<_>>().join(" ").chars().take(500).collect::<String>();
-        Err(format!("Codex 目标任务输入框尚未就绪或发送结果不明：{detail}；{last_stage}"))
+        if authorized {
+            Err(format!("Codex 发送结果不明：{detail}；{last_stage}"))
+        } else {
+            Ok(WindowsSubmission::NotSubmitted(format!("目标会话的发送控件未就绪，未发送继续：{detail}；{last_stage}")))
+        }
     }
 }
 
@@ -974,6 +983,11 @@ fn continue_local_windows_threads(
                 crate::auto_switch_local::TargetState::NeedsContinue => unreachable!(),
             };
             outcome.skipped.push(format!("{}（{reason}）", target.label));
+            continue;
+        }
+        if let Ok(WindowsSubmission::NotSubmitted(ref reason)) = submitted {
+            log::warn!("AUTO_CONTINUE thread={} action=not_submitted error={reason}", target.id);
+            outcome.failed.push(format!("{}：{reason}", target.label));
             continue;
         }
         // Even a failed native invocation can have submitted before its response

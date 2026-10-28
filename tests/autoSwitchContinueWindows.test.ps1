@@ -123,6 +123,79 @@ Assert-True (-not (Test-ContentTitleBounds $title $composer $window $window $fal
 Assert-True (Test-ContentTitleBounds $title $composer $window $window $true) 'The explicit main landmark should support a collapsed sidebar.'
 Assert-True (-not (Test-ContentTitleBounds (New-Bounds 650 920 800 950) $composer $main $window $true)) 'Transcript text below the composer must not count as the title.'
 
+# Tabbed single-line composers may put their footer six accessible ancestors
+# away and reserve space to the right of the text editor. Exercise the actual
+# production scope traversal with fake elements only; no live App UI is read.
+foreach ($functionName in @('Test-ComposerScopeBounds','Test-ComposerControlBounds','Get-ComposerControls')) {
+    $definition = $ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
+    }, $true)
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
+$inline = New-Bounds 600 800 1200 824
+$frame = New-Bounds 580 786 1480 846
+$sendBounds = New-Bounds 1420 792 1452 824
+Assert-True (Test-ComposerControlBounds $sendBounds $inline $frame) 'Inline sibling Send above the text baseline and outside the text width must qualify within its composer frame.'
+Assert-True (-not (Test-ComposerControlBounds (New-Bounds 1580 792 1612 824) $inline $frame)) 'Browser-tab controls outside the composer frame must not qualify.'
+Assert-True (-not (Test-ComposerControlBounds (New-Bounds 1420 600 1452 632) $inline $frame)) 'Transcript controls must not qualify.'
+Assert-True (-not (Test-ComposerScopeBounds $window $inline)) 'The whole application must not qualify as a compact composer frame.'
+
+function New-FakeElement($bounds, $kind, $name) {
+    $element = [pscustomobject]@{Current=[pscustomobject]@{
+        BoundingRectangle=$bounds; ControlType=$kind; Name=$name; IsOffscreen=$false; IsEnabled=$true; ClassName=''
+    }; Parent=$null; Buttons=@(); Edits=@()}
+    $element | Add-Member ScriptMethod GetRuntimeId { return @($this.Current.Name) }
+    $element | Add-Member ScriptMethod FindAll {
+        param($scope,$condition)
+        if ($condition -eq 'fake-edits') { return $this.Edits }
+        return $this.Buttons
+    }
+    return $element
+}
+function Get-ContinueParent($element) { return $element.Parent }
+$buttonCondition = 'fake-buttons'
+$editCondition = 'fake-edits'
+$fakeWindow = New-FakeElement $window ([System.Windows.Automation.ControlType]::Window) 'window'
+$edit = New-FakeElement $inline ([System.Windows.Automation.ControlType]::Edit) 'composer'
+$edit.Current.ClassName = 'ProseMirror'
+$button = New-FakeElement $sendBounds ([System.Windows.Automation.ControlType]::Button) 'Send'
+$child = $edit
+$ancestors = @()
+for ($level=1; $level -le 6; $level++) {
+    $bounds = if ($level -eq 6) { $frame } else { $inline }
+    $parent = New-FakeElement $bounds ([System.Windows.Automation.ControlType]::Group) ('scope-' + $level)
+    $parent.Edits = @($edit)
+    $child.Parent = $parent
+    $child = $parent
+    $ancestors += $parent
+}
+$child.Parent = $fakeWindow
+$child.Buttons = @($button)
+$found = @(Get-ComposerControls $edit $fakeWindow)
+Assert-True ($found.Count -eq 1 -and $found[0].Depth -eq 6 -and $found[0].Kind -eq 'Send') 'A tabbed sibling Send must be found beyond the old four-ancestor limit.'
+$button.Current.Name = 'Stop'
+$found = @(Get-ComposerControls $edit $fakeWindow)
+Assert-True ($found.Count -eq 1 -and $found[0].Kind -eq 'Running') 'The same frame must detect Stop after submission.'
+$button.Current.Name = 'Send'
+$button.Current.IsOffscreen = $true
+Assert-True (@(Get-ComposerControls $edit $fakeWindow).Count -eq 0) 'A hidden background tab Send must not qualify.'
+$button.Current.IsOffscreen = $false
+$otherEdit = New-FakeElement $inline ([System.Windows.Automation.ControlType]::Edit) 'other-composer'
+$otherEdit.Current.ClassName = 'ProseMirror'
+$child.Edits = @($edit,$otherEdit)
+Assert-True (@(Get-ComposerControls $edit $fakeWindow).Count -eq 0) 'A frame containing another visible rich-text composer must be rejected.'
+$child.Edits = @($edit)
+$near = $ancestors[1]
+$near.Current.BoundingRectangle = $frame
+$near.Buttons = @($button)
+$found = @(Get-ComposerControls $edit $fakeWindow)
+Assert-True ($found.Count -eq 1 -and $found[0].Depth -eq 2) 'Normal chat should keep using the nearest valid composer frame.'
+$near.Buttons = @()
+$child.Current.ControlType = [System.Windows.Automation.ControlType]::Document
+Assert-True (@(Get-ComposerControls $edit $fakeWindow).Count -eq 0) 'Traversal must stop before an embedded browser Document.'
+Remove-Item Function:Get-ContinueParent
+
 # Candidate identity must remain unique across windows and side-chat composers.
 # Evaluate this pure selector without discovering windows or invoking any control.
 $selector = $ast.Find({
@@ -135,6 +208,9 @@ $first = [pscustomobject]@{Key='123:composer-1'; Invoke='first'}
 $duplicate = [pscustomobject]@{Key='123:composer-1'; Invoke='same composer'}
 $secondWindow = [pscustomobject]@{Key='456:composer-2'; Invoke='different window'}
 $sideChat = [pscustomobject]@{Key='123:composer-3'; Invoke='different composer'}
+$sameComposerOne = [pscustomobject]@{Key='123:composer-1'; ControlKey='123:composer-1:button-a'}
+$sameComposerTwo = [pscustomobject]@{Key='123:composer-1'; ControlKey='123:composer-1:button-b'}
+Assert-True ($null -eq (Select-UniqueReadyCandidate @($sameComposerOne,$sameComposerTwo))) 'Two distinct Send controls in the same composer must remain ambiguous.'
 Assert-True ($null -eq (Select-UniqueReadyCandidate @())) 'No matching composer must remain unready.'
 Assert-True ((Select-UniqueReadyCandidate @($first)).Key -eq $first.Key) 'One composer must qualify.'
 Assert-True ((Select-UniqueReadyCandidate @($first, $duplicate)).Key -eq $first.Key) 'Repeated Send hits for the same composer must be deduplicated.'
@@ -154,7 +230,7 @@ $timeoutText = @($ast.EndBlock.Statements | Where-Object {
 })[-1].Extent.Text
 $powerShell = (Get-Command powershell.exe).Source
 
-function Run-Fixture($reply, $changed, $invokeThrows, $neverReady) {
+function Run-Fixture($reply, $changed, $invokeThrows, $neverReady, $buttonChanged = $false) {
     $fixture = @'
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -164,10 +240,11 @@ $invoke | Add-Member -MemberType ScriptMethod -Name Invoke -Value {
     [Console]::Out.WriteLine('INVOKED')
     if (INVOKE_THROWS) { throw 'Simulated uncertain invocation' }
 }
-$candidate = [pscustomobject]@{Key='target'; Invoke=$invoke}
+$candidate = [pscustomobject]@{Key='target'; ControlKey='button-a'; Invoke=$invoke}
 function Get-ReadyCandidate {
     $script:counter++
     if (NEVER_READY) { return $null }
+    if (BUTTON_CHANGED -and $script:counter -gt 1) { return [pscustomobject]@{Key='target'; ControlKey='button-b'; Invoke=$invoke} }
     if (CHANGED -and $script:counter -gt 1) { return [pscustomobject]@{Key='other'; Invoke=$invoke} }
     return $candidate
 }
@@ -179,6 +256,7 @@ $script:lastReason = 'waiting_for_enabled_send_control'
 '@
     $fixture = $fixture.Replace('INVOKE_THROWS', ('$' + $invokeThrows.ToString().ToLowerInvariant()))
     $fixture = $fixture.Replace('NEVER_READY', ('$' + $neverReady.ToString().ToLowerInvariant()))
+    $fixture = $fixture.Replace('BUTTON_CHANGED', ('$' + $buttonChanged.ToString().ToLowerInvariant()))
     $fixture = $fixture.Replace('CHANGED', ('$' + $changed.ToString().ToLowerInvariant()))
     $fixture += [Environment]::NewLine + $trapText + [Environment]::NewLine + $loopText + [Environment]::NewLine + $timeoutText
     return (Run-IsolatedFixture $fixture $reply)
@@ -218,6 +296,8 @@ Assert-True ($submit.ExitCode -eq 0 -and $submit.Output -match 'SUBMITTED' -and 
 $changed = Run-Fixture 'SUBMIT' $true $false $false
 Assert-True ($changed.ExitCode -ne 0 -and $changed.Output -notmatch 'INVOKED|SUBMITTED') 'A changed composer must revoke readiness.'
 Assert-True ($changed.Errors -match 'changed before submission' -and $changed.Errors -notmatch 'CLIXML|<Objs') 'The useful failure must remain plain text, not serialized PowerShell markup.'
+$changedButton = Run-Fixture 'SUBMIT' $false $false $false $true
+Assert-True ($changedButton.ExitCode -ne 0 -and $changedButton.Output -notmatch 'INVOKED|SUBMITTED') 'The same composer with a replacement Send control must revoke readiness.'
 $uncertain = Run-Fixture 'SUBMIT' $false $true $false
 Assert-True ($uncertain.ExitCode -ne 0 -and @($uncertain.Output -split "\r?\n" | Where-Object {$_ -eq 'INVOKED'}).Count -eq 1 -and $uncertain.Output -notmatch 'SUBMITTED') 'An uncertain invocation must not be retried.'
 $loading = Run-Fixture 'SUBMIT' $false $false $true
@@ -316,4 +396,4 @@ function Get-ReadyCandidate([switch]$ObserveRunning) {
 function Start-Sleep { param($Milliseconds) }
 Assert-True (Wait-RunningTransition $sent) 'A stable matching Stop must confirm the submitted target.'
 Assert-True ($script:runningPolls -eq 3) 'A foreign Stop must be ignored before two matching observations.'
-Write-Output 'PASS: send-to-stop acceptance, PowerShell syntax, composer text fallback, Send/Steer classification, geometry, unique composer selection, bounded navigation decisions and eight isolated continuation/Home fixtures.'
+Write-Output 'PASS: tabbed/inline composer scope, send-to-stop acceptance, PowerShell syntax, composer text fallback, Send/Steer classification, geometry, unique composer selection, bounded navigation decisions and nine isolated continuation/Home fixtures.'

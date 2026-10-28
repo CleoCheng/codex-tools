@@ -133,7 +133,8 @@ function Select-UniqueReadyCandidate([object[]]$candidates) {
     $unique = @{}
     foreach ($candidate in $candidates) {
         # Ancestor scopes can expose the same composer and Send button several times.
-        $unique[$candidate.Key] = $candidate
+        $identity = if ($candidate.ControlKey) { $candidate.ControlKey } else { $candidate.Key }
+        $unique[$identity] = $candidate
     }
     if ($unique.Count -eq 1) { return @($unique.Values)[0] }
     if ($unique.Count -gt 1) {
@@ -151,6 +152,59 @@ function Get-SubmitControlKind($name) {
     if ($name -match '^(Send|Send message|Send prompt|Send follow-up|\u53d1\u9001|\u53d1\u9001\u6d88\u606f)(\s*[\(\uff08].*)?$') { return 'Send' }
     if ($name -match '^(Steer|Queue|Stop|Stop response|\u5f15\u5bfc|\u6392\u961f|\u505c\u6b62)(\s*[\(\uff08].*)?$') { return 'Running' }
     return 'Other'
+}
+
+function Get-ContinueParent($element) {
+    return [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($element)
+}
+
+function Test-ComposerScopeBounds($scope, $composer) {
+    # A tab may add wrappers between the editable text and its sibling toolbar.
+    # Never expand the search into the transcript, browser, sidebar or whole app.
+    if ($null -eq $scope -or $scope.IsEmpty -or $composer.IsEmpty) { return $false }
+    return $scope.Left -le $composer.Left -and $scope.Right -ge $composer.Right -and
+        $scope.Top -le $composer.Top -and $scope.Bottom -ge $composer.Bottom -and
+        ($scope.Right - $scope.Left) -le (($composer.Right - $composer.Left) + 384) -and
+        ($scope.Bottom - $scope.Top) -le (($composer.Bottom - $composer.Top) + 200)
+}
+
+function Test-ComposerControlBounds($button, $composer, $scope) {
+    if ($button.IsEmpty -or -not (Test-ComposerScopeBounds $scope $composer)) { return $false }
+    return $button.Left -ge $scope.Left -and $button.Right -le $scope.Right -and
+        $button.Top -ge $scope.Top -and $button.Bottom -le $scope.Bottom -and
+        $button.Left -ge ($composer.Left - 64) -and $button.Right -le ($composer.Right + 384) -and
+        $button.Top -ge ($composer.Top - 24) -and $button.Bottom -le ($composer.Bottom + 120) -and
+        ($button.Right - $button.Left) -le 96 -and ($button.Bottom - $button.Top) -le 96
+}
+
+function Get-ComposerControls($edit, $window) {
+    $composerBounds = $edit.Current.BoundingRectangle
+    $scope = $edit
+    for ($depth = 1; $depth -le 12; $depth++) {
+        $scope = Get-ContinueParent $scope
+        if ($null -eq $scope -or $scope.Equals($window) -or
+            $scope.Current.ControlType -eq [System.Windows.Automation.ControlType]::Document) { break }
+        $scopeBounds = $scope.Current.BoundingRectangle
+        if (-not (Test-ComposerScopeBounds $scopeBounds $composerBounds)) { continue }
+        $editIdentity = $edit.GetRuntimeId() -join '.'
+        $otherComposers = @($scope.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCondition) | Where-Object {
+            ($_.GetRuntimeId() -join '.') -ne $editIdentity -and -not $_.Current.IsOffscreen -and
+            $_.Current.ClassName -match '(^|\s)ProseMirror(\s|$)'
+        })
+        if ($otherComposers.Count -gt 0) { break }
+        $controls = [System.Collections.Generic.List[object]]::new()
+        foreach ($button in $scope.FindAll([System.Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
+            if ($button.Current.IsOffscreen) { continue }
+            $kind = Get-SubmitControlKind $button.Current.Name
+            if ($kind -eq 'Other' -or -not (Test-ComposerControlBounds $button.Current.BoundingRectangle $composerBounds $scopeBounds)) { continue }
+            [void]$controls.Add([PSCustomObject]@{Button=$button; Kind=$kind; Depth=$depth})
+        }
+        if ($controls.Count -gt 0) {
+            # Use the nearest composer frame exposing a submit/stop control.
+            # Do not continue outward and pick another pane's identically named button.
+            return $controls.ToArray()
+        }
+    }
 }
 
 function Get-NavigationAction($observation, $state, [long]$nowMs) {
@@ -191,7 +245,7 @@ function Update-ConversationNavigation {
 function Get-ReadyCandidate([switch]$ObserveRunning) {
     $candidates = [System.Collections.Generic.List[object]]::new()
     $processes = @(Get-CodexDesktopProcesses)
-    $counts = @{Windows=0; Titles=0; Editors=0; VisibleEditors=0; PromptMatches=0; MainMatches=0; SendControls=0; DisabledSend=0; RunningControls=0}
+    $counts = @{Windows=0; Titles=0; Editors=0; VisibleEditors=0; PromptMatches=0; MainMatches=0; SendControls=0; DisabledSend=0; RunningControls=0; ControlDepth=0}
     $lastAccessibilityError = $null
     $appWindows = @{}
     $targetDrafts = @{}
@@ -248,41 +302,31 @@ function Get-ReadyCandidate([switch]$ObserveRunning) {
                 }
                 if ($composerText -ne $prompt -and -not $ObserveRunning) { continue }
                 $counts.MainMatches++
-                $scope = $edit
-                for ($level = 0; $level -lt 4; $level++) {
-                    $scope = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($scope)
-                    if ($null -eq $scope -or $scope.Equals($window)) { break }
-                    $buttons = $scope.FindAll([System.Windows.Automation.TreeScope]::Descendants, $buttonCondition)
-                    foreach ($button in $buttons) {
-                        if ($button.Current.IsOffscreen) { continue }
-                        # Verified against composer.submitButtonTooltip.send in the installed App bundle.
-                        # Stop/Steer/Queue/Resume controls never qualify as Send.
-                        $kind = Get-SubmitControlKind $button.Current.Name
-                        if ($kind -eq 'Other') { continue }
-                        $bounds = $button.Current.BoundingRectangle
-                        if ($bounds.IsEmpty -or $bounds.Left -lt ($composerBounds.Left - 64) -or
-                            $bounds.Right -gt ($composerBounds.Right + 64) -or
-                            $bounds.Top -lt $composerBounds.Top -or $bounds.Bottom -gt ($composerBounds.Bottom + 120)) { continue }
-                        if ($kind -eq 'Running') {
-                            if ($button.Current.IsEnabled) {
-                                $counts.RunningControls++
-                                if ($ObserveRunning -and (Test-StopControl $button.Current.Name)) {
-                                    [void]$candidates.Add([PSCustomObject]@{Key=$key; Kind='Stop'})
-                                }
+                foreach ($control in @(Get-ComposerControls $edit $window)) {
+                    $button = $control.Button
+                    $kind = $control.Kind
+                    $controlKey = $key + ':' + ($button.GetRuntimeId() -join '.')
+                    $counts.ControlDepth = [Math]::Max($counts.ControlDepth, $control.Depth)
+                    if ($kind -eq 'Running') {
+                        if ($button.Current.IsEnabled) {
+                            $counts.RunningControls++
+                            if ($ObserveRunning -and (Test-StopControl $button.Current.Name)) {
+                                [void]$candidates.Add([PSCustomObject]@{Key=$key; ControlKey=$controlKey; Kind='Stop'})
                             }
-                            continue
                         }
-                        if ($ObserveRunning) { continue }
-                        if (-not $button.Current.IsEnabled) { $counts.DisabledSend++; continue }
-                        $counts.SendControls++
-                        $invoke = $null
-                        if ($button.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
-                            [void]$candidates.Add([PSCustomObject]@{
-                                Key = $key
-                                Kind = 'Send'
-                                Invoke = $invoke
-                            })
-                        }
+                        continue
+                    }
+                    if ($ObserveRunning) { continue }
+                    if (-not $button.Current.IsEnabled) { $counts.DisabledSend++; continue }
+                    $counts.SendControls++
+                    $invoke = $null
+                    if ($button.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
+                        [void]$candidates.Add([PSCustomObject]@{
+                            Key = $key
+                            ControlKey = $controlKey
+                            Kind = 'Send'
+                            Invoke = $invoke
+                        })
                     }
                 }
             }
@@ -314,7 +358,8 @@ function Get-ReadyCandidate([switch]$ObserveRunning) {
         ' editors=' + $counts.Editors + ' visible=' + $counts.VisibleEditors +
         ' prompt_matches=' + $counts.PromptMatches + ' main_matches=' + $counts.MainMatches +
         ' sends=' + $counts.SendControls + ' disabled_sends=' + $counts.DisabledSend +
-        ' running_controls=' + $counts.RunningControls + ' target_composers=' + $targetDrafts.Count)
+        ' running_controls=' + $counts.RunningControls + ' control_depth=' + $counts.ControlDepth +
+        ' target_composers=' + $targetDrafts.Count)
     if ($lastAccessibilityError) { Write-Stage ('accessibility_error: ' + $lastAccessibilityError) }
     if ($targetDrafts.Count -gt 1 -or $script:navigationObservation.ConflictingDraft) { return $null }
     # Never choose the first same-title draft while the deep-link navigation is still loading.
@@ -356,7 +401,7 @@ while ([DateTime]::UtcNow -lt $deadline) {
         if ([Console]::In.ReadLine() -ne 'SUBMIT') { exit 0 }
         # Re-query after the handshake: navigation, edits, disabled buttons or running turns revoke readiness.
         $verified = Get-ReadyCandidate
-        if ($null -eq $verified -or $verified.Key -ne $candidate.Key) {
+        if ($null -eq $verified -or $verified.Key -ne $candidate.Key -or $verified.ControlKey -ne $candidate.ControlKey) {
             throw 'The verified conversation composer changed before submission.'
         }
         # Never retry Invoke: even an exception can mean the App already accepted the message.

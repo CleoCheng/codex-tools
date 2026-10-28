@@ -496,6 +496,25 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "windows")]
+    fn helper_without_ready_reports_not_submitted_instead_of_waiting_for_a_turn() {
+        use crate::auto_switch_continue::{wait_for_windows_continue_helper, WindowsSubmission};
+        use std::process::Stdio;
+        let path = std::env::temp_dir().join(format!("codex-unready-{}.jsonl", uuid::Uuid::new_v4()));
+        let mut file = File::create(&path).unwrap();
+        writeln!(file, "{}", json!({"type":"session_meta","payload":{"id":"target"}})).unwrap();
+        writeln!(file, "{}", event("task_started", "original")).unwrap();
+        let mut target = LocalContinueTarget { id: "target".into(), label: "target".into(), rollout_path: path.clone(), snapshot: read_snapshot(&path).unwrap() };
+        let child = crate::utils::new_background_command("powershell.exe")
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[Console]::Error.WriteLine('waiting_for_enabled_send_control'); exit 1"])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let result = wait_for_windows_continue_helper(&mut target, child, Duration::from_secs(3)).unwrap();
+        assert!(matches!(result, WindowsSubmission::NotSubmitted(reason) if reason.contains("未发送继续")));
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
     fn waiting_helper_exits_on_task_changes_even_when_it_never_emits_ready() {
         use crate::auto_switch_continue::{wait_for_windows_continue_helper, WindowsSubmission};
         use std::process::Stdio;
