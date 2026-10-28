@@ -18,6 +18,8 @@ Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class CodexToolsContinueNative {
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
     [DllImport("shell32.dll", CharSet=CharSet.Unicode)]
     public static extern IntPtr ShellExecute(IntPtr hwnd, string operation, string file, string parameters, string directory, int show);
 }
@@ -33,7 +35,7 @@ if ([string]::IsNullOrWhiteSpace($uri) -or [string]::IsNullOrWhiteSpace($title) 
 # A cold-start deep link can be consumed before the renderer restores Home.
 # Dispatch only after a stable live App shell is observed, then verify navigation.
 $navigationUri = $uri.Split('?')[0]
-$script:navigationState = @{AppKey=''; RouteAttempts=0; PrefillAttempts=0; LastRouteMs=-10000L; LastPrefillMs=-10000L}
+$script:navigationState = @{AppKey=''; RouteAttempts=0; PrefillAttempts=0; LastRouteMs=-10000L; LastPrefillMs=-10000L; TargetAcquired=$false; PrefillDispatched=$false}
 
 function Normalize-ComposerText($text) {
     if ($null -eq $text) { return '' }
@@ -101,6 +103,10 @@ $editCondition = [System.Windows.Automation.OrCondition]::new($editType, $editab
 $buttonCondition = [System.Windows.Automation.PropertyCondition]::new(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::Button)
+$enabledButtonCondition = [System.Windows.Automation.AndCondition]::new(
+    $buttonCondition,
+    [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::IsEnabledProperty, $true),
+    [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::IsOffscreenProperty, $false))
 $titleCondition = [System.Windows.Automation.PropertyCondition]::new(
     [System.Windows.Automation.AutomationElement]::NameProperty, $title)
 $script:lastReason = 'Waiting for the Codex conversation window.'
@@ -159,49 +165,57 @@ function Get-SubmitControlKind($name) {
     return 'Other'
 }
 
-function Get-ContinueParent($element) {
-    return [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($element)
+function Get-ContinueParent($element, [switch]$Raw) {
+    $walker = if ($Raw) { [System.Windows.Automation.TreeWalker]::RawViewWalker }
+        else { [System.Windows.Automation.TreeWalker]::ControlViewWalker }
+    return $walker.GetParent($element)
 }
 
 function Test-ComposerScopeBounds($scope, $composer) {
     # A tab may add wrappers between the editable text and its sibling toolbar.
     # Never expand the search into the transcript, browser, sidebar or whole app.
     if ($null -eq $scope -or $scope.IsEmpty -or $composer.IsEmpty) { return $false }
-    return $scope.Left -le $composer.Left -and $scope.Right -ge $composer.Right -and
-        $scope.Top -le $composer.Top -and $scope.Bottom -ge $composer.Bottom -and
+    # Chromium animated/subpixel bounds can differ by a physical pixel.
+    return $scope.Left -le ($composer.Left + 2) -and $scope.Right -ge ($composer.Right - 2) -and
+        $scope.Top -le ($composer.Top + 2) -and $scope.Bottom -ge ($composer.Bottom - 2) -and
         ($scope.Right - $scope.Left) -le (($composer.Right - $composer.Left) + 384) -and
         ($scope.Bottom - $scope.Top) -le (($composer.Bottom - $composer.Top) + 200)
 }
 
 function Test-ComposerControlBounds($button, $composer, $scope) {
     if ($button.IsEmpty -or -not (Test-ComposerScopeBounds $scope $composer)) { return $false }
-    return $button.Left -ge $scope.Left -and $button.Right -le $scope.Right -and
-        $button.Top -ge $scope.Top -and $button.Bottom -le $scope.Bottom -and
+    return $button.Left -ge ($scope.Left - 2) -and $button.Right -le ($scope.Right + 2) -and
+        $button.Top -ge ($scope.Top - 2) -and $button.Bottom -le ($scope.Bottom + 2) -and
         $button.Left -ge ($composer.Left - 64) -and $button.Right -le ($composer.Right + 384) -and
         $button.Top -ge ($composer.Top - 24) -and $button.Bottom -le ($composer.Bottom + 120) -and
         ($button.Right - $button.Left) -le 96 -and ($button.Bottom - $button.Top) -le 96
 }
 
-function Get-ComposerControls($edit, $window) {
+function Get-ComposerControls($edit, $window, [switch]$Raw) {
+    if (-not $Raw) { $script:scopeDiagnostics = @{Scopes=0; RejectedBounds=0; OtherEditors=0; Buttons=0; Offscreen=0; Unknown=0; Outside=0; Boundary=0; Raw=0} }
+    else { $script:scopeDiagnostics.Raw++ }
     $composerBounds = $edit.Current.BoundingRectangle
     $scope = $edit
     for ($depth = 1; $depth -le 12; $depth++) {
-        $scope = Get-ContinueParent $scope
+        $scope = Get-ContinueParent $scope -Raw:$Raw
         if ($null -eq $scope -or $scope.Equals($window) -or
-            $scope.Current.ControlType -eq [System.Windows.Automation.ControlType]::Document) { break }
+            $scope.Current.ControlType -eq [System.Windows.Automation.ControlType]::Document) { $script:scopeDiagnostics.Boundary++; break }
+        $script:scopeDiagnostics.Scopes++
         $scopeBounds = $scope.Current.BoundingRectangle
-        if (-not (Test-ComposerScopeBounds $scopeBounds $composerBounds)) { continue }
+        if (-not (Test-ComposerScopeBounds $scopeBounds $composerBounds)) { $script:scopeDiagnostics.RejectedBounds++; continue }
         $editIdentity = $edit.GetRuntimeId() -join '.'
         $otherComposers = @($scope.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCondition) | Where-Object {
             ($_.GetRuntimeId() -join '.') -ne $editIdentity -and -not $_.Current.IsOffscreen -and
             $_.Current.ClassName -match '(^|\s)ProseMirror(\s|$)'
         })
-        if ($otherComposers.Count -gt 0) { break }
+        if ($otherComposers.Count -gt 0) { $script:scopeDiagnostics.OtherEditors++; break }
         $controls = [System.Collections.Generic.List[object]]::new()
         foreach ($button in $scope.FindAll([System.Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
-            if ($button.Current.IsOffscreen) { continue }
+            $script:scopeDiagnostics.Buttons++
+            if ($button.Current.IsOffscreen) { $script:scopeDiagnostics.Offscreen++; continue }
             $kind = Get-SubmitControlKind $button.Current.Name
-            if ($kind -eq 'Other' -or -not (Test-ComposerControlBounds $button.Current.BoundingRectangle $composerBounds $scopeBounds)) { continue }
+            if ($kind -eq 'Other') { $script:scopeDiagnostics.Unknown++; continue }
+            if (-not (Test-ComposerControlBounds $button.Current.BoundingRectangle $composerBounds $scopeBounds)) { $script:scopeDiagnostics.Outside++; continue }
             [void]$controls.Add([PSCustomObject]@{Button=$button; Kind=$kind; Depth=$depth})
         }
         if ($controls.Count -gt 0) {
@@ -210,19 +224,31 @@ function Get-ComposerControls($edit, $window) {
             return $controls.ToArray()
         }
     }
+    if (-not $Raw) {
+        # Control View can omit presentational footer wrappers after mounting.
+        # Raw View retains these wrappers, with the same geometry, uniqueness
+        # and Document/window boundaries; never widen to a page-wide search.
+        return (Get-ComposerControls $edit $window -Raw)
+    }
 }
 
 function Get-NavigationAction($observation, $state, [long]$nowMs) {
+    if ($observation.TargetCount -eq 1) { $state.TargetAcquired = $true }
+    if ($observation.Prefilled) { $state.PrefillDispatched = $true }
+    # A background user window must never be pulled back by a deep link.
+    # After acquisition, navigation and prefill are one-way state transitions.
+    if (-not $observation.AppForeground -or $state.PrefillDispatched) { return 'Wait' }
     if (-not $observation.AppReady) { $state.AppKey = ''; return 'Wait' }
     if ($state.AppKey -ne $observation.AppKey) { $state.AppKey = $observation.AppKey; return 'Wait' }
     if ($observation.TargetCount -gt 1 -or $observation.Prefilled -or $observation.ConflictingDraft) { return 'Wait' }
-    if ($observation.TargetCount -eq 0 -and $state.RouteAttempts -lt 6 -and ($nowMs - $state.LastRouteMs) -ge 8000) {
+    if (-not $state.TargetAcquired -and $observation.TargetCount -eq 0 -and $state.RouteAttempts -lt 6 -and ($nowMs - $state.LastRouteMs) -ge 8000) {
         $state.RouteAttempts++
         $state.LastRouteMs = $nowMs
         return 'Route'
     }
     if ($observation.TargetCount -eq 1 -and $state.PrefillAttempts -lt 3 -and ($nowMs - $state.LastPrefillMs) -ge 4000) {
         $state.PrefillAttempts++
+        $state.PrefillDispatched = $true
         $state.LastPrefillMs = $nowMs
         return 'Prefill'
     }
@@ -254,9 +280,13 @@ function Get-ReadyCandidate([switch]$ObserveRunning) {
     $lastAccessibilityError = $null
     $appWindows = @{}
     $targetDrafts = @{}
+    $appForeground = $false
+    $foregroundHandle = [CodexToolsContinueNative]::GetForegroundWindow()
+    $scopeTrace = 'not_observed'
     foreach ($process in $processes) {
         if ($process.MainWindowHandle -eq 0) { continue }
         $counts.Windows++
+        if ($process.MainWindowHandle -eq $foregroundHandle) { $appForeground = $true }
         try {
             $window = [System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
             # Home may have no chat editor yet. A live web Document with an
@@ -264,11 +294,11 @@ function Get-ReadyCandidate([switch]$ObserveRunning) {
             # native minimize/close buttons outside the Document do not qualify.
             $document = $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $documentType)
             if ($null -ne $document -and -not $document.Current.IsOffscreen) {
-                foreach ($appButton in $document.FindAll([System.Windows.Automation.TreeScope]::Descendants, $buttonCondition)) {
-                    if ($appButton.Current.IsEnabled -and -not $appButton.Current.IsOffscreen) {
-                        $appWindows[[string]$process.Id + ':' + [string]$process.MainWindowHandle] = $true
-                        break
-                    }
+                # Only readiness needs one button; do not enumerate every
+                # transcript/tool button on each poll in long conversations.
+                $appButton = $document.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $enabledButtonCondition)
+                if ($null -ne $appButton) {
+                    $appWindows[[string]$process.Id + ':' + [string]$process.MainWindowHandle] = $true
                 }
             }
             $headings = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $titleCondition)
@@ -307,7 +337,9 @@ function Get-ReadyCandidate([switch]$ObserveRunning) {
                 }
                 if ($composerText -ne $prompt -and -not $ObserveRunning) { continue }
                 $counts.MainMatches++
-                foreach ($control in @(Get-ComposerControls $edit $window)) {
+                $controls = @(Get-ComposerControls $edit $window)
+                $scopeTrace = (@($script:scopeDiagnostics.Keys | Sort-Object | ForEach-Object {$_ + ':' + $script:scopeDiagnostics[$_]}) -join ',')
+                foreach ($control in $controls) {
                     $button = $control.Button
                     $kind = $control.Kind
                     $controlKey = $key + ':' + ($button.GetRuntimeId() -join '.')
@@ -341,6 +373,7 @@ function Get-ReadyCandidate([switch]$ObserveRunning) {
     }
     $script:navigationObservation = [PSCustomObject]@{
         AppReady = $appWindows.Count -gt 0
+        AppForeground = $appForeground
         AppKey = (@($appWindows.Keys | Sort-Object) -join ',')
         TargetCount = $targetDrafts.Count
         Prefilled = @($targetDrafts.Values | Where-Object {$_.Prefilled}).Count -gt 0
@@ -349,6 +382,7 @@ function Get-ReadyCandidate([switch]$ObserveRunning) {
     $stage = if ($processes.Count -eq 0) { 'desktop_process_not_found' }
         elseif ($counts.Windows -eq 0) { 'waiting_for_desktop_window' }
         elseif ($appWindows.Count -eq 0) { 'waiting_for_app_shell' }
+        elseif (-not $appForeground) { 'paused_app_in_background' }
         elseif ($targetDrafts.Count -gt 1) { 'waiting_for_unique_target_composer' }
         elseif ($script:navigationObservation.ConflictingDraft) { 'target_has_different_draft' }
         elseif ($counts.Titles -eq 0) { 'waiting_for_target_title' }
@@ -364,9 +398,10 @@ function Get-ReadyCandidate([switch]$ObserveRunning) {
         ' prompt_matches=' + $counts.PromptMatches + ' main_matches=' + $counts.MainMatches +
         ' sends=' + $counts.SendControls + ' disabled_sends=' + $counts.DisabledSend +
         ' running_controls=' + $counts.RunningControls + ' control_depth=' + $counts.ControlDepth +
-        ' target_composers=' + $targetDrafts.Count)
+        ' target_composers=' + $targetDrafts.Count + ' foreground=' + $appForeground + ' scope=' + $scopeTrace)
     if ($lastAccessibilityError) { Write-Stage ('accessibility_error: ' + $lastAccessibilityError) }
-    if ($targetDrafts.Count -gt 1 -or $script:navigationObservation.ConflictingDraft) { return $null }
+    if ($targetDrafts.Count -gt 1 -or $script:navigationObservation.ConflictingDraft -or
+        (-not $ObserveRunning -and -not $appForeground)) { return $null }
     # Never choose the first same-title draft while the deep-link navigation is still loading.
     return (Select-UniqueReadyCandidate -candidates $candidates.ToArray())
 }

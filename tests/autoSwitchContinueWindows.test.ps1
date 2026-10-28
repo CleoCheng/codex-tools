@@ -38,6 +38,17 @@ Remove-Item Function:Get-Process
 # A visible Chromium draft may expose empty ValuePattern and nonempty TextPattern.
 # Mock both patterns; this regression check never accesses a real window.
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName UIAutomationClient
+# Construct the production filters without querying any live window. This
+# catches PowerShell 5.1 overload/binding errors as well as parser errors.
+foreach ($variableName in @('$editType', '$documentType', '$focusableCondition', '$editableDocument', '$editCondition', '$buttonCondition', '$enabledButtonCondition')) {
+    $assignment = @($ast.EndBlock.Statements | Where-Object {
+        $_ -is [System.Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -eq $variableName
+    })
+    Assert-True ($assignment.Count -eq 1) ('Expected one production filter: ' + $variableName)
+    . ([scriptblock]::Create($assignment[0].Extent.Text))
+}
+Assert-True ($enabledButtonCondition.GetConditions().Count -eq 3) 'Renderer readiness must select one visible enabled Button.'
 foreach ($functionName in @('Normalize-ComposerText', 'Get-ComposerText', 'Get-SubmitControlKind', 'Get-NavigationAction')) {
     $definition = $ast.Find({
         param($node)
@@ -76,7 +87,7 @@ function New-NavigationState {
     return @{AppKey=''; RouteAttempts=0; PrefillAttempts=0; LastRouteMs=-10000L; LastPrefillMs=-10000L}
 }
 $nav = New-NavigationState
-$startupObservation = [pscustomobject]@{AppReady=$false; AppKey=''; TargetCount=0; Prefilled=$false; ConflictingDraft=$false}
+$startupObservation = [pscustomobject]@{AppReady=$false; AppForeground=$true; AppKey=''; TargetCount=0; Prefilled=$false; ConflictingDraft=$false}
 Assert-True ((Get-NavigationAction $startupObservation $nav 0) -eq 'Wait' -and $nav.RouteAttempts -eq 0) 'Cold startup must not consume a navigation attempt.'
 $startupObservation.AppReady = $true
 $startupObservation.AppKey = '123:window'
@@ -100,6 +111,28 @@ Assert-True ((Get-NavigationAction $startupObservation $nav 100000) -eq 'Wait') 
 $startupObservation.TargetCount = 1
 $nav.PrefillAttempts = 3
 Assert-True ((Get-NavigationAction $startupObservation $nav 100000) -eq 'Wait') 'Prefill retries must be bounded separately from routing.'
+
+# Once acquired/prefilled, a transient missing title/editor or user navigation
+# must not dispatch another deep link, including after returning to the app.
+$nav = New-NavigationState
+$nav.AppKey = '123:window'
+$startupObservation.TargetCount = 1
+Assert-True ((Get-NavigationAction $startupObservation $nav 0) -eq 'Prefill') 'An acquired task may be prefilled once.'
+$startupObservation.TargetCount = 0
+$startupObservation.Prefilled = $false
+Assert-True ((Get-NavigationAction $startupObservation $nav 20000) -eq 'Wait' -and $nav.RouteAttempts -eq 0 -and $nav.PrefillAttempts -eq 1) 'A remounted or user-hidden composer must never be reopened after prefill.'
+$startupObservation.TargetCount = 1
+Assert-True ((Get-NavigationAction $startupObservation $nav 30000) -eq 'Wait' -and $nav.PrefillAttempts -eq 1) 'A temporarily empty draft must not trigger a second prefill.'
+$nav = New-NavigationState
+$nav.AppKey = '123:window'
+$startupObservation.TargetCount = 0
+$startupObservation.AppForeground = $false
+Assert-True ((Get-NavigationAction $startupObservation $nav 40000) -eq 'Wait' -and $nav.RouteAttempts -eq 0) 'A background app must never open a route or steal focus.'
+$startupObservation.TargetCount = 1
+Assert-True ((Get-NavigationAction $startupObservation $nav 41000) -eq 'Wait' -and $nav.PrefillAttempts -eq 0) 'A background target must never be prefilled.'
+$startupObservation.TargetCount = 0
+$startupObservation.AppForeground = $true
+Assert-True ((Get-NavigationAction $startupObservation $nav 50000) -eq 'Wait' -and $nav.RouteAttempts -eq 0) 'Once acquired in the background, a missing target must not be reopened later.'
 
 # Evaluate only the pure geometry function; never load UIAutomation or navigate the installed App.
 $geometry = $ast.Find({
@@ -144,7 +177,7 @@ Assert-True (-not (Test-ComposerScopeBounds $window $inline)) 'The whole applica
 function New-FakeElement($bounds, $kind, $name) {
     $element = [pscustomobject]@{Current=[pscustomobject]@{
         BoundingRectangle=$bounds; ControlType=$kind; Name=$name; IsOffscreen=$false; IsEnabled=$true; ClassName=''
-    }; Parent=$null; Buttons=@(); Edits=@()}
+    }; Parent=$null; RawParent=$null; Buttons=@(); Edits=@()}
     $element | Add-Member ScriptMethod GetRuntimeId { return @($this.Current.Name) }
     $element | Add-Member ScriptMethod FindAll {
         param($scope,$condition)
@@ -153,7 +186,7 @@ function New-FakeElement($bounds, $kind, $name) {
     }
     return $element
 }
-function Get-ContinueParent($element) { return $element.Parent }
+function Get-ContinueParent($element, [switch]$Raw) { if ($Raw -and $element.RawParent) { return $element.RawParent }; return $element.Parent }
 $buttonCondition = 'fake-buttons'
 $editCondition = 'fake-edits'
 $fakeWindow = New-FakeElement $window ([System.Windows.Automation.ControlType]::Window) 'window'
@@ -194,6 +227,21 @@ Assert-True ($found.Count -eq 1 -and $found[0].Depth -eq 2) 'Normal chat should 
 $near.Buttons = @()
 $child.Current.ControlType = [System.Windows.Automation.ControlType]::Document
 Assert-True (@(Get-ComposerControls $edit $fakeWindow).Count -eq 0) 'Traversal must stop before an embedded browser Document.'
+# Control View can skip wrappers that Raw View retains after a re-render.
+$child.Current.ControlType = [System.Windows.Automation.ControlType]::Group
+$edit.Parent = $fakeWindow
+$edit.RawParent = $ancestors[0]
+$found = @(Get-ComposerControls $edit $fakeWindow)
+Assert-True ($found.Count -eq 1 -and $found[0].Depth -eq 6 -and $script:scopeDiagnostics.Raw -eq 1) 'Raw View must recover a compact footer omitted by Control View.'
+$button.Current.BoundingRectangle = New-Bounds 1600 792 1632 824
+Assert-True (@(Get-ComposerControls $edit $fakeWindow).Count -eq 0 -and $script:scopeDiagnostics.Outside -gt 0) 'Raw fallback must still exclude another panel button and diagnose the exclusion.'
+$button.Current.BoundingRectangle = $sendBounds
+$child.Edits = @($edit,$otherEdit)
+Assert-True (@(Get-ComposerControls $edit $fakeWindow).Count -eq 0 -and $script:scopeDiagnostics.OtherEditors -gt 0) 'Raw fallback must retain the second-composer boundary.'
+$child.Edits = @($edit)
+$child.Current.ControlType = [System.Windows.Automation.ControlType]::Document
+Assert-True (@(Get-ComposerControls $edit $fakeWindow).Count -eq 0) 'Raw fallback must stop at the same Document boundary.'
+Assert-True (Test-ComposerScopeBounds (New-Bounds 601 801 1200 824) $inline) 'A one-pixel animated bound mismatch must not reject the composer.'
 Remove-Item Function:Get-ContinueParent
 
 # Candidate identity must remain unique across windows and side-chat composers.
@@ -353,6 +401,7 @@ function Get-ReadyCandidate {
     $script:polls++
     $script:navigationObservation = [pscustomobject]@{
         AppReady = $script:polls -ge 3
+        AppForeground = $true
         AppKey = '123:fixture-window'
         TargetCount = [int]$script:targetVisible
         Prefilled = $script:prefilled
@@ -401,4 +450,4 @@ function Get-ReadyCandidate([switch]$ObserveRunning) {
 function Start-Sleep { param($Milliseconds) }
 Assert-True (Wait-RunningTransition $sent) 'A stable matching Stop must confirm the submitted target.'
 Assert-True ($script:runningPolls -eq 3) 'A foreign Stop must be ignored before two matching observations.'
-Write-Output 'PASS: tabbed/inline composer scope, send-to-stop acceptance, PowerShell syntax, composer text fallback, Send/Steer classification, geometry, unique composer selection, bounded navigation decisions and ten isolated continuation/Home/revocation fixtures.'
+Write-Output 'PASS: tabbed/inline composer scope, send-to-stop acceptance, PowerShell syntax, composer text fallback, Send/Steer classification, geometry, unique composer selection, foreground gating, one-way navigation, bounded Raw View recovery and ten isolated continuation/Home/revocation fixtures.'
