@@ -127,12 +127,12 @@ $nav = New-NavigationState
 $nav.AppKey = '123:window'
 $startupObservation.TargetCount = 0
 $startupObservation.AppForeground = $false
-Assert-True ((Get-NavigationAction $startupObservation $nav 40000) -eq 'Wait' -and $nav.RouteAttempts -eq 0) 'A background app must never open a route or steal focus.'
+Assert-True ((Get-NavigationAction $startupObservation $nav 40000) -eq 'Route' -and $nav.RouteAttempts -eq 1) 'A background restart must still reach its target without requiring a manual foreground click.'
 $startupObservation.TargetCount = 1
-Assert-True ((Get-NavigationAction $startupObservation $nav 41000) -eq 'Wait' -and $nav.PrefillAttempts -eq 0) 'A background target must never be prefilled.'
+Assert-True ((Get-NavigationAction $startupObservation $nav 41000) -eq 'Prefill' -and $nav.PrefillAttempts -eq 1) 'A verified background target must still prefill exactly once.'
 $startupObservation.TargetCount = 0
 $startupObservation.AppForeground = $true
-Assert-True ((Get-NavigationAction $startupObservation $nav 50000) -eq 'Wait' -and $nav.RouteAttempts -eq 0) 'Once acquired in the background, a missing target must not be reopened later.'
+Assert-True ((Get-NavigationAction $startupObservation $nav 50000) -eq 'Wait' -and $nav.RouteAttempts -eq 1) 'Once acquired in the background, a missing target must not be reopened later.'
 
 # Evaluate only the pure geometry function; never load UIAutomation or navigate the installed App.
 $geometry = $ast.Find({
@@ -159,7 +159,7 @@ Assert-True (-not (Test-ContentTitleBounds (New-Bounds 650 920 800 950) $compose
 # Tabbed single-line composers may put their footer six accessible ancestors
 # away and reserve space to the right of the text editor. Exercise the actual
 # production scope traversal with fake elements only; no live App UI is read.
-foreach ($functionName in @('Test-ComposerScopeBounds','Test-ComposerControlBounds','Get-ComposerControls')) {
+foreach ($functionName in @('Test-ComposerLayoutClass','Test-ComposerLayoutBounds','Test-ComposerScopeBounds','Test-ComposerControlBounds','Get-ComposerControls')) {
     $definition = $ast.Find({
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
@@ -242,6 +242,26 @@ $child.Edits = @($edit)
 $child.Current.ControlType = [System.Windows.Automation.ControlType]::Document
 Assert-True (@(Get-ComposerControls $edit $fakeWindow).Count -eq 0) 'Raw fallback must stop at the same Document boundary.'
 Assert-True (Test-ComposerScopeBounds (New-Bounds 601 801 1200 824) $inline) 'A one-pixel animated bound mismatch must not reject the composer.'
+# Goal/attachment layouts have a semantic composer root wider than the text
+# input, so the footer can legitimately lie beyond the old +/-384 heuristic.
+$child.Current.ControlType = [System.Windows.Automation.ControlType]::Group
+$child.Current.ClassName = '_ComposerLayoutRoot_buildhash_2'
+$child.Current.BoundingRectangle = New-Bounds 550 760 1800 950
+$button.Current.BoundingRectangle = New-Bounds 1690 880 1730 920
+$found = @(Get-ComposerControls $edit $fakeWindow)
+Assert-True ($found.Count -eq 1 -and $script:scopeDiagnostics.Layout -gt 0) 'The exact composer component must own its distant sibling Send in a goal layout.'
+$child.Current.ClassName = 'main-content'
+Assert-True (@(Get-ComposerControls $edit $fakeWindow).Count -eq 0) 'A similarly sized arbitrary panel must not inherit composer ownership.'
+$child.Current.ClassName = '_ComposerLayoutRoot_buildhash_2'
+$child.Edits = @($edit,$otherEdit)
+Assert-True (@(Get-ComposerControls $edit $fakeWindow).Count -eq 0) 'A semantic component containing a second visible composer must still be rejected.'
+$child.Edits = @($edit)
+$button.Current.BoundingRectangle = New-Bounds 1820 880 1860 920
+Assert-True (@(Get-ComposerControls $edit $fakeWindow).Count -eq 0) 'A Send outside the exact composer root must never be used.'
+$button.Current.BoundingRectangle = New-Bounds 1690 730 1730 770
+Assert-True (@(Get-ComposerControls $edit $fakeWindow).Count -eq 0) 'A goal-bar control above the text input must not be mistaken for chat submission.'
+$child.Current.ClassName = 'ComposerLayoutRootSuffix'
+Assert-True (-not (Test-ComposerLayoutClass $child.Current.ClassName)) 'Partial component-name matches must not confer ownership.'
 Remove-Item Function:Get-ContinueParent
 
 # Candidate identity must remain unique across windows and side-chat composers.
@@ -359,7 +379,7 @@ Assert-True ($loading.ExitCode -ne 0 -and $loading.Errors -match 'Timed out.*wai
 
 # Run the real navigation/update/handshake loop with a fake Home and link opener.
 # No real process lookup, native link, UI access, manual click or user message.
-function Run-HomeFixture($discardFirstRoute, $differentDraft) {
+function Run-HomeFixture($discardFirstRoute, $differentDraft, $background = $false) {
     $definitions = foreach ($functionName in @('Write-Stage', 'Get-NavigationAction', 'Update-ConversationNavigation')) {
         $definition = $ast.Find({
             param($node)
@@ -401,7 +421,7 @@ function Get-ReadyCandidate {
     $script:polls++
     $script:navigationObservation = [pscustomobject]@{
         AppReady = $script:polls -ge 3
-        AppForeground = $true
+        AppForeground = -not BACKGROUND
         AppKey = '123:fixture-window'
         TargetCount = [int]$script:targetVisible
         Prefilled = $script:prefilled
@@ -418,6 +438,7 @@ $previousKey = $null
 $script:lastReason = 'target_has_different_draft'
 '@
     $fixture = $fixture.Replace('DISCARD_FIRST', ('$' + $discardFirstRoute.ToString().ToLowerInvariant()))
+    $fixture = $fixture.Replace('BACKGROUND', ('$' + $background.ToString().ToLowerInvariant()))
     $fixture = $fixture.Replace('DIFFERENT_DRAFT', ('$' + $differentDraft.ToString().ToLowerInvariant()))
     $fixture += "`n" + ($definitions -join "`n") + "`n" + $trapText + "`n" + $loopText + "`n" + $timeoutText
     return (Run-IsolatedFixture $fixture 'SUBMIT')
@@ -425,6 +446,8 @@ $script:lastReason = 'target_has_different_draft'
 
 $fromHome = Run-HomeFixture $false $false
 Assert-True ($fromHome.ExitCode -eq 0 -and $fromHome.Output -match 'ROUTE[\s\S]*PREFILL[\s\S]*READY[\s\S]*INVOKED[\s\S]*SUBMITTED') ('Empty Home must navigate, prefill and submit automatically in order. Fixture: ' + ($fromHome | ConvertTo-Json -Compress))
+$fromBackground = Run-HomeFixture $false $false $true
+Assert-True ($fromBackground.ExitCode -eq 0 -and @($fromBackground.Output -split "\r?\n" | Where-Object {$_ -eq 'INVOKED'}).Count -eq 1) 'A background restart must navigate, prefill and invoke its verified target exactly once.'
 $discardedRoute = Run-HomeFixture $true $false
 Assert-True ($discardedRoute.ExitCode -eq 0 -and @($discardedRoute.Output -split "\r?\n" | Where-Object {$_ -eq 'ROUTE'}).Count -eq 2 -and @($discardedRoute.Output -split "\r?\n" | Where-Object {$_ -eq 'INVOKED'}).Count -eq 1) 'A lost route must recover without a manual click and still submit exactly once.'
 $differentDraft = Run-HomeFixture $false $true
@@ -450,4 +473,4 @@ function Get-ReadyCandidate([switch]$ObserveRunning) {
 function Start-Sleep { param($Milliseconds) }
 Assert-True (Wait-RunningTransition $sent) 'A stable matching Stop must confirm the submitted target.'
 Assert-True ($script:runningPolls -eq 3) 'A foreign Stop must be ignored before two matching observations.'
-Write-Output 'PASS: tabbed/inline composer scope, send-to-stop acceptance, PowerShell syntax, composer text fallback, Send/Steer classification, geometry, unique composer selection, foreground gating, one-way navigation, bounded Raw View recovery and ten isolated continuation/Home/revocation fixtures.'
+Write-Output 'PASS: tabbed/inline composer scope, send-to-stop acceptance, PowerShell syntax, composer text fallback, Send/Steer classification, geometry, unique composer selection, background recovery, semantic goal composer ownership, one-way navigation, bounded Raw View recovery and eleven isolated continuation/Home/revocation fixtures.'

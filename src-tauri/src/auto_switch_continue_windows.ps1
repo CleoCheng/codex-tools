@@ -171,6 +171,21 @@ function Get-ContinueParent($element, [switch]$Raw) {
     return $walker.GetParent($element)
 }
 
+function Test-ComposerLayoutClass($className) {
+    # Stable component names read from the installed App bundle; the generated
+    # CSS hash may change between releases. Never match a whole chat/main pane.
+    return $className -match '(^|\s)_?(ComposerLayoutRoot|ComposerLayoutBody|ComposerLayoutFooter|AnimatedAdaptiveFooter|DocumentComposerControls)(_|\s|$)'
+}
+
+function Test-ComposerLayoutBounds($scope, $composer, $window) {
+    if ($null -eq $scope -or $scope.IsEmpty -or $composer.IsEmpty -or $window.IsEmpty) { return $false }
+    return $scope.Left -le ($composer.Left + 2) -and $scope.Right -ge ($composer.Right - 2) -and
+        $scope.Top -le ($composer.Top + 2) -and $scope.Bottom -ge ($composer.Bottom - 2) -and
+        $scope.Left -ge ($window.Left - 2) -and $scope.Right -le ($window.Right + 2) -and
+        $scope.Top -ge ($window.Top - 2) -and $scope.Bottom -le ($window.Bottom + 2) -and
+        ($scope.Bottom - $scope.Top) -le [Math]::Max(600, ($composer.Bottom - $composer.Top) + 320)
+}
+
 function Test-ComposerScopeBounds($scope, $composer) {
     # A tab may add wrappers between the editable text and its sibling toolbar.
     # Never expand the search into the transcript, browser, sidebar or whole app.
@@ -182,8 +197,17 @@ function Test-ComposerScopeBounds($scope, $composer) {
         ($scope.Bottom - $scope.Top) -le (($composer.Bottom - $composer.Top) + 200)
 }
 
-function Test-ComposerControlBounds($button, $composer, $scope) {
-    if ($button.IsEmpty -or -not (Test-ComposerScopeBounds $scope $composer)) { return $false }
+function Test-ComposerControlBounds($button, $composer, $scope, [switch]$Layout) {
+    if ($button.IsEmpty -or $scope.IsEmpty -or
+        (-not $Layout -and -not (Test-ComposerScopeBounds $scope $composer))) { return $false }
+    if ($Layout) {
+        # A proven composer component owns the sibling footer. Its control may
+        # be farther from the editable text in goal/attachment/scaled layouts.
+        return $button.Left -ge ($scope.Left - 2) -and $button.Right -le ($scope.Right + 2) -and
+            $button.Top -ge ($scope.Top - 2) -and $button.Bottom -le ($scope.Bottom + 2) -and
+            $button.Top -ge ($composer.Top - 24) -and
+            ($button.Right - $button.Left) -le 144 -and ($button.Bottom - $button.Top) -le 144
+    }
     return $button.Left -ge ($scope.Left - 2) -and $button.Right -le ($scope.Right + 2) -and
         $button.Top -ge ($scope.Top - 2) -and $button.Bottom -le ($scope.Bottom + 2) -and
         $button.Left -ge ($composer.Left - 64) -and $button.Right -le ($composer.Right + 384) -and
@@ -192,17 +216,21 @@ function Test-ComposerControlBounds($button, $composer, $scope) {
 }
 
 function Get-ComposerControls($edit, $window, [switch]$Raw) {
-    if (-not $Raw) { $script:scopeDiagnostics = @{Scopes=0; RejectedBounds=0; OtherEditors=0; Buttons=0; Offscreen=0; Unknown=0; Outside=0; Boundary=0; Raw=0} }
+    if (-not $Raw) { $script:scopeDiagnostics = @{Scopes=0; RejectedBounds=0; OtherEditors=0; Buttons=0; Offscreen=0; Unknown=0; Outside=0; Boundary=0; Raw=0; Layout=0} }
     else { $script:scopeDiagnostics.Raw++ }
     $composerBounds = $edit.Current.BoundingRectangle
     $scope = $edit
-    for ($depth = 1; $depth -le 12; $depth++) {
+    $maxDepth = if ($Raw) { 24 } else { 12 }
+    for ($depth = 1; $depth -le $maxDepth; $depth++) {
         $scope = Get-ContinueParent $scope -Raw:$Raw
         if ($null -eq $scope -or $scope.Equals($window) -or
             $scope.Current.ControlType -eq [System.Windows.Automation.ControlType]::Document) { $script:scopeDiagnostics.Boundary++; break }
         $script:scopeDiagnostics.Scopes++
         $scopeBounds = $scope.Current.BoundingRectangle
-        if (-not (Test-ComposerScopeBounds $scopeBounds $composerBounds)) { $script:scopeDiagnostics.RejectedBounds++; continue }
+        $layoutScope = (Test-ComposerLayoutClass $scope.Current.ClassName) -and
+            (Test-ComposerLayoutBounds $scopeBounds $composerBounds $window.Current.BoundingRectangle)
+        if (-not $layoutScope -and -not (Test-ComposerScopeBounds $scopeBounds $composerBounds)) { $script:scopeDiagnostics.RejectedBounds++; continue }
+        if ($layoutScope) { $script:scopeDiagnostics.Layout++ }
         $editIdentity = $edit.GetRuntimeId() -join '.'
         $otherComposers = @($scope.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCondition) | Where-Object {
             ($_.GetRuntimeId() -join '.') -ne $editIdentity -and -not $_.Current.IsOffscreen -and
@@ -215,7 +243,7 @@ function Get-ComposerControls($edit, $window, [switch]$Raw) {
             if ($button.Current.IsOffscreen) { $script:scopeDiagnostics.Offscreen++; continue }
             $kind = Get-SubmitControlKind $button.Current.Name
             if ($kind -eq 'Other') { $script:scopeDiagnostics.Unknown++; continue }
-            if (-not (Test-ComposerControlBounds $button.Current.BoundingRectangle $composerBounds $scopeBounds)) { $script:scopeDiagnostics.Outside++; continue }
+            if (-not (Test-ComposerControlBounds $button.Current.BoundingRectangle $composerBounds $scopeBounds -Layout:$layoutScope)) { $script:scopeDiagnostics.Outside++; continue }
             [void]$controls.Add([PSCustomObject]@{Button=$button; Kind=$kind; Depth=$depth})
         }
         if ($controls.Count -gt 0) {
@@ -235,9 +263,9 @@ function Get-ComposerControls($edit, $window, [switch]$Raw) {
 function Get-NavigationAction($observation, $state, [long]$nowMs) {
     if ($observation.TargetCount -eq 1) { $state.TargetAcquired = $true }
     if ($observation.Prefilled) { $state.PrefillDispatched = $true }
-    # A background user window must never be pulled back by a deep link.
-    # After acquisition, navigation and prefill are one-way state transitions.
-    if (-not $observation.AppForeground -or $state.PrefillDispatched) { return 'Wait' }
+    # Native UIA is addressed to a verified control and needs no foreground
+    # focus. Navigation/prefill remain one-way transitions to prevent loops.
+    if ($state.PrefillDispatched) { return 'Wait' }
     if (-not $observation.AppReady) { $state.AppKey = ''; return 'Wait' }
     if ($state.AppKey -ne $observation.AppKey) { $state.AppKey = $observation.AppKey; return 'Wait' }
     if ($observation.TargetCount -gt 1 -or $observation.Prefilled -or $observation.ConflictingDraft) { return 'Wait' }
@@ -256,7 +284,7 @@ function Get-NavigationAction($observation, $state, [long]$nowMs) {
 }
 
 function Open-ConversationLink($link) {
-    $opened = [CodexToolsContinueNative]::ShellExecute([IntPtr]::Zero, 'open', $link, $null, $null, 1)
+    $opened = [CodexToolsContinueNative]::ShellExecute([IntPtr]::Zero, 'open', $link, $null, $null, 4)
     if ($opened.ToInt64() -le 32) { throw 'Unable to open the Codex conversation link.' }
 }
 
@@ -382,7 +410,6 @@ function Get-ReadyCandidate([switch]$ObserveRunning) {
     $stage = if ($processes.Count -eq 0) { 'desktop_process_not_found' }
         elseif ($counts.Windows -eq 0) { 'waiting_for_desktop_window' }
         elseif ($appWindows.Count -eq 0) { 'waiting_for_app_shell' }
-        elseif (-not $appForeground) { 'paused_app_in_background' }
         elseif ($targetDrafts.Count -gt 1) { 'waiting_for_unique_target_composer' }
         elseif ($script:navigationObservation.ConflictingDraft) { 'target_has_different_draft' }
         elseif ($counts.Titles -eq 0) { 'waiting_for_target_title' }
@@ -400,8 +427,7 @@ function Get-ReadyCandidate([switch]$ObserveRunning) {
         ' running_controls=' + $counts.RunningControls + ' control_depth=' + $counts.ControlDepth +
         ' target_composers=' + $targetDrafts.Count + ' foreground=' + $appForeground + ' scope=' + $scopeTrace)
     if ($lastAccessibilityError) { Write-Stage ('accessibility_error: ' + $lastAccessibilityError) }
-    if ($targetDrafts.Count -gt 1 -or $script:navigationObservation.ConflictingDraft -or
-        (-not $ObserveRunning -and -not $appForeground)) { return $null }
+    if ($targetDrafts.Count -gt 1 -or $script:navigationObservation.ConflictingDraft) { return $null }
     # Never choose the first same-title draft while the deep-link navigation is still loading.
     return (Select-UniqueReadyCandidate -candidates $candidates.ToArray())
 }
