@@ -494,6 +494,8 @@ while ([DateTime]::UtcNow -lt $deadline) {
     } else {
         $previousKey = $candidate.Key + ':' + $candidate.ControlKey
     }
-    Start-Sleep -Milliseconds 400
+    $pollDelay = 900
+    if ($null -ne $candidate) { $pollDelay = 300 }
+    Start-Sleep -Milliseconds $pollDelay
 }
 throw ('Timed out waiting for Codex readiness: ' + $script:lastReason)

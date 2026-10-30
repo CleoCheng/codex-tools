@@ -17,6 +17,7 @@ pub(crate) struct RolloutSnapshot {
     session_id: Option<String>,
     thread_id: Option<String>,
     progress_records: u64,
+    capacity_error_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -25,6 +26,37 @@ pub(crate) struct LocalContinueTarget {
     pub(crate) label: String,
     pub(crate) rollout_path: PathBuf,
     pub(crate) snapshot: RolloutSnapshot,
+}
+
+/// Detect only the explicit upstream model-capacity failure. Quota,
+/// authentication, network and task errors do not enter this retry path.
+pub(crate) fn is_capacity_error_record(record: &Value) -> bool {
+    if record["type"] != "event_msg" { return false; }
+    let error = &record["payload"]["error"];
+    let info = error.get("codexErrorInfo")
+        .or_else(|| error.get("codex_error_info"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let message = error.get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    info == "server_overloaded"
+        || info == "model_at_capacity"
+        || message.contains("selected model is at capacity")
+        || message.contains("model is at capacity")
+        || message.contains("server overloaded")
+        || message.contains("server_overloaded")
+        || message.contains("算力不足")
+        || message.contains("容量不足")
+}
+
+fn capacity_error_key(record: &Value) -> Option<String> {
+    if !is_capacity_error_record(record) { return None; }
+    let turn = record["payload"]["turn_id"].as_str().unwrap_or_default();
+    let timestamp = record["timestamp"].as_str().unwrap_or_default();
+    Some(format!("{turn}|{timestamp}"))
 }
 
 fn record_time(value: &Value) -> Option<i64> {
@@ -59,6 +91,7 @@ impl RolloutSnapshot {
             "task_started" => {
                 self.last_turn_id = payload["turn_id"].as_str().map(str::to_string);
                 self.incomplete = true;
+                self.capacity_error_key = None;
             }
             "task_complete" | "task_completed" | "turn_aborted" => {
                 let turn_id = payload["turn_id"].as_str();
@@ -69,6 +102,7 @@ impl RolloutSnapshot {
                 }
                 self.incomplete = payload["type"] == "turn_aborted"
                     || !payload["error"].is_null();
+                self.capacity_error_key = capacity_error_key(record);
             }
             _ => {}
         }
@@ -115,6 +149,101 @@ pub(crate) fn collect_local_targets(
     window_minutes: u32,
 ) -> Result<Vec<LocalContinueTarget>, String> {
     collect_from_dir(&crate::app_paths::codex_dir()?, now, window_minutes)
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CapacityRetryTarget {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) rollout_path: PathBuf,
+    pub(crate) error_key: String,
+}
+
+const CAPACITY_TAIL_BYTES: u64 = 256 * 1024;
+
+/// Capacity failures are terminal records. Read only a bounded tail instead of
+/// reparsing the whole rollout on every monitor tick.
+fn read_recent_capacity_error(path: &Path) -> Result<Option<(String, i64)>, String> {
+    let mut file = File::open(path).map_err(|error| format!("无法读取任务记录: {error}"))?;
+    let length = file.metadata().map_err(|error| error.to_string())?.len();
+    let start = length.saturating_sub(CAPACITY_TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).map_err(|error| error.to_string())?;
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    if start > 0 {
+        let _ = reader.read_until(b'\n', &mut line).map_err(|error| error.to_string())?;
+    }
+    let mut latest = None;
+    loop {
+        line.clear();
+        let count = reader.read_until(b'\n', &mut line).map_err(|error| error.to_string())?;
+        if count == 0 { break; }
+        if !line.ends_with(b"\n") { break; }
+        let Ok(record) = serde_json::from_slice::<Value>(&line) else { continue; };
+        if record["type"] == "event_msg" && record["payload"]["type"] == "task_started" {
+            latest = None;
+        } else if let Some(key) = capacity_error_key(&record) {
+            if let Some(timestamp) = record_time(&record) {
+                latest = Some((key, timestamp));
+            }
+        }
+    }
+    Ok(latest)
+}
+
+/// Lightweight monitor input: recent App rows plus bounded rollout tails.
+/// It performs no UI Automation and no network request.
+pub(crate) fn collect_capacity_retry_targets(
+    now: i64,
+    window_minutes: u32,
+) -> Result<Vec<CapacityRetryTarget>, String> {
+    let codex_dir = crate::app_paths::codex_dir()?;
+    let mut databases = std::fs::read_dir(&codex_dir)
+        .map_err(|error| format!("无法读取 Codex 任务目录: {error}"))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let version = name.strip_prefix("state_")?.strip_suffix(".sqlite")?.parse::<u32>().ok()?;
+            Some((version, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    databases.sort_by_key(|(version, _)| std::cmp::Reverse(*version));
+    let Some((_, database)) = databases.first() else { return Ok(Vec::new()); };
+    let connection = Connection::open_with_flags(
+        database,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ).map_err(|error| format!("无法只读打开 Codex 任务数据库: {error}"))?;
+    connection.busy_timeout(Duration::from_millis(500)).map_err(|error| error.to_string())?;
+    let cutoff = now.saturating_sub(i64::from(window_minutes.clamp(1, 1440)) * 60);
+    let has_custom_name = {
+        let mut columns = connection.prepare("PRAGMA table_info(threads)").map_err(|error| error.to_string())?;
+        let names = columns.query_map([], |row| row.get::<_, String>(1)).map_err(|error| error.to_string())?;
+        names.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?.iter().any(|name| name == "name")
+    };
+    let label = if has_custom_name { "COALESCE(NULLIF(name, ''), title)" } else { "title" };
+    let mut query = connection.prepare(&format!(
+        "SELECT id, {label}, rollout_path FROM threads WHERE source = 'vscode' AND archived = 0 ORDER BY updated_at DESC LIMIT 32"
+    )).map_err(|error| error.to_string())?;
+    let rows = query.query_map([], |row| Ok((
+        row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?,
+    ))).map_err(|error| error.to_string())?;
+    let mut targets = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
+    for row in rows {
+        let (id, title, raw_path) = row.map_err(|error| error.to_string())?;
+        if uuid::Uuid::parse_str(&id).is_err() { continue; }
+        let path = PathBuf::from(raw_path);
+        if !seen_paths.insert(path.clone()) { continue; }
+        let Some((error_key, error_at)) = read_recent_capacity_error(&path)? else { continue; };
+        if error_at < cutoff { continue; }
+        targets.push(CapacityRetryTarget {
+            id,
+            label: if title.trim().is_empty() { "未命名任务".to_string() } else { title },
+            rollout_path: path,
+            error_key,
+        });
+    }
+    Ok(targets)
 }
 
 fn collect_from_dir(
@@ -371,6 +500,35 @@ mod tests {
         assert_eq!(count, 1);
         drop(file);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn capacity_error_is_detected_and_cleared_by_a_new_turn() {
+        let mut snapshot = RolloutSnapshot::default();
+        snapshot.observe(&event("task_started", "old"));
+        let mut failed = event("task_complete", "old");
+        failed["payload"]["error"] = json!({
+            "message": "Selected model is at capacity. Please try a different model.",
+            "codex_error_info": "server_overloaded",
+        });
+        assert!(is_capacity_error_record(&failed));
+        snapshot.observe(&failed);
+        assert!(snapshot.capacity_error_key.is_some());
+        snapshot.observe(&event("task_started", "new"));
+        assert!(snapshot.capacity_error_key.is_none());
+    }
+
+    #[test]
+    fn ordinary_quota_and_network_errors_are_not_capacity_errors() {
+        let mut quota = event("task_complete", "turn");
+        quota["payload"]["error"] = json!({
+            "message": "You've hit your usage limit",
+            "codex_error_info": "usage_limit_exceeded",
+        });
+        assert!(!is_capacity_error_record(&quota));
+        let mut network = event("task_complete", "turn");
+        network["payload"]["error"] = json!({"message": "network error"});
+        assert!(!is_capacity_error_record(&network));
     }
 
     #[test]

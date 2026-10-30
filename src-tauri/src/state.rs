@@ -104,6 +104,7 @@ pub(crate) struct AppState {
     pub(crate) api_proxy_usage_writer: Arc<Mutex<Option<ApiProxyUsageWriter>>>,
     pub(crate) cloudflared: Mutex<Option<CloudflaredRuntimeHandle>>,
     pub(crate) auto_switch: Mutex<crate::auto_switch::AutoSwitchRuntime>,
+    pub(crate) capacity_retry: Mutex<crate::auto_switch_continue::CapacityRetryRuntime>,
 }
 
 impl Default for AppState {
@@ -120,6 +121,7 @@ impl Default for AppState {
             api_proxy_usage_writer: Arc::new(Mutex::new(None)),
             cloudflared: Mutex::new(None),
             auto_switch: Mutex::new(crate::auto_switch::AutoSwitchRuntime::default()),
+            capacity_retry: Mutex::new(crate::auto_switch_continue::CapacityRetryRuntime::default()),
         }
     }
 }

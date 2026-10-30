@@ -2847,6 +2847,84 @@ async fn auto_start_api_proxy_if_enabled(app: AppHandle) {
     }
 }
 
+async fn monitor_capacity_retries(state: &AppState, window_minutes: u32) {
+    if state.auto_switch.lock().await.in_flight {
+        return;
+    }
+
+    let now = utils::now_unix_seconds();
+    let targets = match tokio::task::spawn_blocking(move || {
+        auto_switch_local::collect_capacity_retry_targets(now, window_minutes)
+    }).await {
+        Ok(Ok(targets)) => targets,
+        Ok(Err(error)) => {
+            log::debug!("CAPACITY_RETRY scan_failed error={error}");
+            return;
+        }
+        Err(error) => {
+            log::debug!("CAPACITY_RETRY scan_join_failed error={error}");
+            return;
+        }
+    };
+    if targets.is_empty() { return; }
+
+    let active_ids = targets.iter().map(|target| target.id.clone()).collect::<std::collections::HashSet<_>>();
+    {
+        let mut runtime = state.capacity_retry.lock().await;
+        runtime.attempts.retain(|id, _| active_ids.contains(id));
+    }
+
+    let app_path = cli::find_codex_app_path();
+    for target in targets.into_iter().take(1) {
+        let should_probe = {
+            let mut runtime = state.capacity_retry.lock().await;
+            let entry = runtime.attempts.entry(target.id.clone()).or_insert_with(|| {
+                auto_switch_continue::CapacityRetryAttempt {
+                    error_key: target.error_key.clone(),
+                    attempts: 0,
+                    next_probe_at: 0,
+                }
+            });
+            if entry.error_key != target.error_key {
+                entry.error_key = target.error_key.clone();
+                entry.attempts = 0;
+                entry.next_probe_at = 0;
+            }
+            entry.attempts < auto_switch_continue::CAPACITY_RETRY_MAX_ATTEMPTS
+                && now >= entry.next_probe_at
+        };
+        if !should_probe { continue; }
+
+        log::info!("CAPACITY_RETRY action=probe thread={} attempt_window=bounded", target.id);
+        let target_for_probe = target.clone();
+        let app_path_for_probe = app_path.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            auto_switch_continue::run_capacity_retry_probe(
+                &target_for_probe,
+                app_path_for_probe.as_deref(),
+            )
+        }).await;
+        let retried = matches!(result, Ok(Ok(true)));
+        let mut runtime = state.capacity_retry.lock().await;
+        let entry = runtime.attempts.entry(target.id.clone()).or_insert_with(|| {
+            auto_switch_continue::CapacityRetryAttempt {
+                error_key: target.error_key.clone(), attempts: 0, next_probe_at: 0,
+            }
+        });
+        if retried {
+            entry.attempts = entry.attempts.saturating_add(1);
+            entry.next_probe_at = now + auto_switch_continue::capacity_retry_backoff(entry.attempts);
+            log::info!("CAPACITY_RETRY action=retried thread={} attempt={} next_probe_at={}", target.id, entry.attempts, entry.next_probe_at);
+        } else {
+            // A missing/ambiguous UI is not a retry attempt. Avoid rescanning
+            // the same target until the next low-frequency monitor window.
+            entry.next_probe_at = now + 60;
+            log::debug!("CAPACITY_RETRY action=not_ready thread={} next_probe_at={}", target.id, entry.next_probe_at);
+        }
+        break;
+    }
+}
+
 fn start_periodic_usage_refresh_loop(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -2889,6 +2967,8 @@ fn start_periodic_usage_refresh_loop(app: AppHandle) {
                             )
                             .await;
                         });
+                    } else {
+                        monitor_capacity_retries(state.inner(), 30).await;
                     }
                 }
                 Err(error) => {
@@ -3125,7 +3205,7 @@ pub fn run() {
                     .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
                     .build(),
             )?;
-            log::info!("APP_START version={} patch=20261029.2 custom=windows-enhanced.8 log_dir={:?}", env!("CARGO_PKG_VERSION"), app.path().app_log_dir());
+            log::info!("APP_START version={} patch=20261030.1 custom=windows-enhanced.9 log_dir={:?}", env!("CARGO_PKG_VERSION"), app.path().app_log_dir());
 
             #[cfg(target_os = "windows")]
             log::info!("TOOLS_CONTROLLER pid={} job_members={:?}", std::process::id(), windows_desktop_lifecycle::current_job_process_ids());

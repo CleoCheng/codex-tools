@@ -8,6 +8,7 @@
 //! 只处理 `source = vscode` 的用户会话和指定活动时间窗口（默认 30 分钟）；
 //! 已完成、CLI、子代理和过期历史任务不恢复。不会另起无头执行会话。
 
+use std::collections::HashMap;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -16,6 +17,20 @@ use serde_json::Value;
 
 
 const CONTINUE_PROMPT: &str = "继续";
+pub(crate) const CAPACITY_RETRY_MAX_ATTEMPTS: u8 = 3;
+const CAPACITY_RETRY_BACKOFF_SECS: [i64; 3] = [30, 120, 600];
+
+#[derive(Debug, Clone)]
+pub(crate) struct CapacityRetryAttempt {
+    pub(crate) error_key: String,
+    pub(crate) attempts: u8,
+    pub(crate) next_probe_at: i64,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct CapacityRetryRuntime {
+    pub(crate) attempts: HashMap<String, CapacityRetryAttempt>,
+}
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const RESUME_TIMEOUT: Duration = Duration::from_secs(60);
 const TURN_START_TIMEOUT: Duration = Duration::from_secs(120);
@@ -723,6 +738,15 @@ mod tests {
     }
 
     #[test]
+    fn capacity_retry_backoff_is_bounded_and_increases() {
+        assert_eq!(capacity_retry_backoff(0), 30);
+        assert_eq!(capacity_retry_backoff(1), 30);
+        assert_eq!(capacity_retry_backoff(2), 120);
+        assert_eq!(capacity_retry_backoff(3), 600);
+        assert_eq!(capacity_retry_backoff(9), 600);
+    }
+
+    #[test]
     fn duplicate_threads_for_the_same_session_are_collapsed() {
         // Codex 可能为同一 session 生成多个 thread 条目（分叉/重建）。
         // 只保留最近活动的那条，避免重复发送“继续”。
@@ -907,7 +931,7 @@ pub(crate) fn wait_for_windows_continue_helper(
                     no_longer_pending = Some(state);
                     return Ok(());
                 }
-                next_refresh = std::time::Instant::now() + Duration::from_millis(500);
+                next_refresh = std::time::Instant::now() + Duration::from_secs(1);
             }
             if let Some(status) = child.try_wait()
                 .map_err(|error| format!("检查 Codex 任务就绪进程失败: {error}"))?
@@ -918,7 +942,7 @@ pub(crate) fn wait_for_windows_continue_helper(
             if std::time::Instant::now() >= deadline {
                 return Err(format!("等待 Codex 目标任务输入框就绪超时：{last_stage}，未再次发送"));
             }
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(250));
         }
     })();
     if exit_status.is_none() {
@@ -951,6 +975,101 @@ pub(crate) fn wait_for_windows_continue_helper(
             Ok(WindowsSubmission::NotSubmitted(format!("目标会话的发送控件未就绪，未发送继续：{detail}；{last_stage}")))
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapacityRetrySubmission {
+    Retried,
+    NotRetried,
+}
+
+#[cfg(target_os = "windows")]
+fn retry_capacity_with_windows_script(
+    target: &crate::auto_switch_local::CapacityRetryTarget,
+    app_path: Option<&std::path::Path>,
+) -> Result<CapacityRetrySubmission, String> {
+    use base64::Engine;
+    use std::io::{BufRead, Read, Write};
+
+    let script = include_str!("auto_retry_capacity_windows.ps1");
+    let bootstrap = "& ([scriptblock]::Create($env:CODEX_TOOLS_CAPACITY_RETRY_SCRIPT))";
+    let encoded = base64::engine::general_purpose::STANDARD.encode(
+        bootstrap.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>(),
+    );
+    let mut child = crate::utils::new_background_command("powershell.exe")
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-STA", "-EncodedCommand", &encoded])
+        .env("CODEX_TOOLS_CAPACITY_RETRY_TITLE", &target.label)
+        .env("CODEX_TOOLS_CAPACITY_RETRY_APP_PATH", app_path.unwrap_or_else(|| std::path::Path::new("")))
+        .env("CODEX_TOOLS_CAPACITY_RETRY_SCRIPT", script)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().map_err(|error| format!("启动算力不足重试检查失败: {error}"))?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let stdout_reader = std::thread::spawn(move || {
+        let mut lines = Vec::new();
+        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            let _ = sender.send(line.clone());
+            lines.push(line);
+        }
+        lines
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        bytes
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(18);
+    let mut ready = false;
+    let mut result = CapacityRetrySubmission::NotRetried;
+    loop {
+        while let Ok(line) = receiver.try_recv() {
+            match line.trim() {
+                "READY" if !ready => {
+                    ready = true;
+                    let input = child.stdin.as_mut().ok_or("算力不足重试检查输入通道已关闭")?;
+                    writeln!(input, "RETRY").and_then(|_| input.flush())
+                        .map_err(|error| format!("发送算力不足重试授权失败: {error}"))?;
+                }
+                "RETRIED" => result = CapacityRetrySubmission::Retried,
+                "NOT_RETRIED" => result = CapacityRetrySubmission::NotRetried,
+                "REVOKED" => ready = false,
+                _ => {}
+            }
+        }
+        if child.try_wait().map_err(|error| error.to_string())?.is_some() { break; }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.wait();
+    let _ = stdout_reader.join();
+    let errors = stderr_reader.join().unwrap_or_default();
+    if matches!(result, CapacityRetrySubmission::NotRetried) && !errors.is_empty() {
+        log::debug!("CAPACITY_RETRY probe error={}", String::from_utf8_lossy(&errors).chars().take(300).collect::<String>());
+    }
+    Ok(result)
+}
+
+pub(crate) fn run_capacity_retry_probe(
+    target: &crate::auto_switch_local::CapacityRetryTarget,
+    app_path: Option<&std::path::Path>,
+) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    {
+        return Ok(matches!(retry_capacity_with_windows_script(target, app_path)?, CapacityRetrySubmission::Retried));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (target, app_path);
+        Ok(false)
+    }
+}
+
+pub(crate) fn capacity_retry_backoff(attempt: u8) -> i64 {
+    CAPACITY_RETRY_BACKOFF_SECS[usize::from(attempt.saturating_sub(1)).min(CAPACITY_RETRY_BACKOFF_SECS.len() - 1)]
 }
 
 fn continue_thread_uri(thread_id: &str) -> Result<String, String> {
