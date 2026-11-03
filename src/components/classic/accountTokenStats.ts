@@ -3,7 +3,7 @@ import type {
   CodexAccountTokenUsage,
   CodexTokenUsageSnapshot,
 } from "../../types/app";
-import { dateFormatter, numberFormatter } from "../../utils/intlFormatters";
+import { dateFormatter, numberFormatter } from "../../utils/intlFormatters.ts";
 
 const STATS_COPY = {
   "zh-CN": {
@@ -131,7 +131,7 @@ export function formatLastActive(
   }).format(new Date(epochSec * 1000));
 }
 
-/** Short reset label: a clock time within a day, otherwise a date; the title carries the full time. */
+/** Keep the local date and time visible; a reset within 24 hours may be tomorrow. */
 export function formatResetShort(
   epochSec: number | null | undefined,
   locale: string,
@@ -139,11 +139,10 @@ export function formatResetShort(
   if (!epochSec) return null;
   const date = new Date(epochSec * 1000);
   if (Number.isNaN(date.getTime())) return null;
-  const withinDay = epochSec * 1000 - Date.now() < 24 * 60 * 60 * 1000;
-  return dateFormatter(
-    locale,
-    withinDay
-      ? { hour: "2-digit", minute: "2-digit" }
-      : { month: "2-digit", day: "2-digit" },
-  ).format(date);
+  return dateFormatter(locale, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }

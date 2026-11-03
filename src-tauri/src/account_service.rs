@@ -559,6 +559,14 @@ pub(crate) async fn refresh_all_usage_internal(
         build_refresh_targets(store.accounts, current_auth_override.as_ref())
     };
 
+    // Relay-only or empty account stores have nothing to refresh. Avoid
+    // creating an HTTP client and taking the write-side merge locks on every
+    // periodic tick just to reconstruct the same local summaries.
+    if refresh_targets.is_empty() {
+        log::debug!("USAGE_REFRESH_SKIP reason=no_chatgpt_targets");
+        return list_accounts_internal(app, state).await;
+    }
+
     let outcomes =
         refresh_usage_targets_with_workers(app, state, refresh_targets, force_auth_refresh).await?;
 
