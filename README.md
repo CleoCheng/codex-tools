@@ -33,6 +33,7 @@ Codex Tools 面向同时使用多个 Codex 账号的场景，提供桌面 GUI、
 - 账号优先级：支持调整账号组顺序，API 反代可按优先级使用账号，额度恢复后重新优先选择；也保留平均和逐个策略。
 - 重置卡：在账号详情中选择可用卡片并确认使用，提交前重新读取卡片状态，重试同一张卡复用持久化请求 ID。
 - 快速切换：切换 `~/.codex/auth.json` 和 `config.toml`，可联动启动新版 ChatGPT App，并兼容旧 Codex App 与 `codex app` 回退。
+- 本地项目保留：默认开启，保留已有显式关闭设置；本地 ChatGPT 账号切换时先保存最终会话快照，再覆盖同步到目标账号；目标原状态会备份。详见[本地项目保留与恢复](docs/local-project-sharing.md)。
 - CLI/TUI：通过 `ctc` 执行 `list/switch/login/import/export/delete/usage/provider/doctor/report/tui`。
 - API 反代：本地提供 OpenAI 兼容 `/v1` 接口，支持运行中账号轮换。
 - App/CLI 绑定：可一键把 Codex App/CLI 切到本机反代地址，也可一键恢复原配置。
@@ -156,6 +157,7 @@ Codex Tools 可以启动本地 OpenAI 兼容反代：
 - 默认模型：`gpt-5.6-sol`
 - 默认推理：`xhigh` + `default`（标准速度；客户端仍可显式请求 `fast`）
 - GPT-6 Codex 账号代理模型：`gpt-6-astra`、`gpt-6.1-sol`、`gpt-6-sol`、`gpt-6-luna`。代理使用 Codex CLI `0.159.0` 标识及 Responses Lite 请求格式；模型能否调用仍由上游账号权限决定。
+- 新增模型：`gpt-6.1-terra`、`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare`（需要上游账号有对应权限）
 - GPT-5.6 模型：`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`
 
 `CODEX_TOOLS_PROXY_SERVICE_TIER` 可设置代理默认速度，支持 `auto`、`default` / `standard`、`fast` / `priority`、`flex`。显式请求值优先于环境变量；`fast` / `priority` 转为上游 `priority`。未设置或环境变量非法时使用 `default`，显式非法请求仍会被拒绝，Key 的速度权限继续生效。
@@ -203,7 +205,7 @@ GPT-5.6 可用推理强度为 `none`、`low`、`medium`、`high`、`xhigh`、`ma
 
 反代面板也提供“切到本机反代”和“恢复正常地址”按钮，会自动备份并恢复 `~/.codex/config.toml` 与 `~/.codex/auth.json`。
 
-如果官方 Codex App/CLI 接入反代后看不到 GPT-6.1 Sol，可点击“切到本机反代”（已绑定时为“同步模型目录”），然后重启 Codex App/CLI。API Key 接入下，部分客户端使用内置模型目录，并不会读取反代的 `/v1/models`。绑定时本工具会通过 `model_catalog_json` 提供独立的 Codex 模型目录，按模型开关和当前 Key 白名单筛选；启动代理或修改这些权限时也会同步。原有 Key 的权限不会自动扩大。切换回普通账号或恢复配置后，Codex 继续使用原来的模型目录。
+如果官方 Codex App/CLI 接入反代后看不到 GPT-6.1 Sol / Terra，可点击“切到本机反代”（已绑定时为“同步模型目录”），然后重启 Codex App/CLI。API Key 接入下，部分客户端使用内置模型目录，并不会读取反代的 `/v1/models`。绑定时本工具会通过 `model_catalog_json` 提供独立的 Codex 模型目录，按模型开关和当前 Key 白名单筛选；启动代理或修改这些权限时也会同步。原有 Key 的权限不会自动扩大。切换回普通账号或恢复配置后，Codex 继续使用原来的模型目录。
 
 ### Anthropic Messages
 

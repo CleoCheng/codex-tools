@@ -2,6 +2,70 @@
 
 ### Released
 
+- v3.2.1
+
+#### English
+
+1. Continue desktop account switching when local session sync fails, and show that the session was not synced. Interrupted transactions still require recovery.
+2. Log the failing file, operation, JSON position and filesystem error without including credential contents.
+3. Desktop release for macOS and Windows. npm CLI packages are not published in this release.
+
+#### 中文
+
+1. 本地会话同步失败时继续切换桌面账号，并提示会话未同步；中断的事务仍需先恢复。
+2. 补充失败文件、操作阶段、JSON 解析位置和文件系统错误日志，不记录凭证内容。
+3. 本次发布 macOS 与 Windows 桌面安装包，不发布 npm CLI 包。
+
+- v3.2.0
+
+#### English
+
+1. Add Claude account management, OAuth and credential import, usage refresh and session maintenance, with a choice of app for authorization links.
+2. Preserve local workspaces when switching accounts and improve project/session recovery and switch input handling.
+3. Unify account, analytics, proxy, settings and dialog layouts; add responsive account details, consistent controls and concise operation feedback.
+4. Refine account rows with colored plan stamps, credit balances and 24-hour token usage. Keep large layouts stationary and use short transitions only for overlays and feedback.
+5. Desktop release for macOS and Windows. npm CLI packages are not published in this release.
+
+#### 中文
+
+1. 新增 Claude 账号管理、OAuth 与凭据导入、用量刷新和会话维护，授权链接支持选择打开应用。
+2. 完善账号切换时的本地工作区保留、项目与会话恢复，以及切换输入处理。
+3. 统一账号、分析、API 反代、设置及弹窗布局，完善响应式详情面板、公共控件和操作反馈。
+4. 账号行采用彩色套餐标识，集中展示余额和近 24 小时 Token；大面积布局保持静止，仅浮层和提示保留短过渡。
+5. 本次发布 macOS 与 Windows 桌面安装包，不发布 npm CLI 包。
+
+- v3.1.5
+
+#### English
+
+1. Preserve local Codex projects and conversation assignments when switching between local ChatGPT accounts. Enabled by default; existing explicit opt-outs remain unchanged.
+2. Preview project merges and recover interrupted switches without overwriting conflicting external changes.
+3. Keep historical project mappings and stale sidebar records from blocking valid project transfers.
+4. Includes desktop, CLI and TUI integration. This release publishes desktop installers; npm CLI packages are not published.
+
+#### 中文
+
+1. 本地 ChatGPT 账号切换时保留 Codex 项目及对话归属，默认开启，已有明确关闭设置保持不变。
+2. 提供项目合并预览及切换中断恢复，避免覆盖存在冲突的外部修改。
+3. 修复历史项目映射及旧侧栏记录阻止有效项目迁移的问题。
+4. 功能覆盖桌面、CLI 和 TUI。本次发布桌面安装包，暂不发布 npm CLI 包。
+
+- v3.1.4
+
+#### English
+
+1. Report interrupted Responses streams explicitly for both HTTP SSE and WebSocket clients, while preserving partial output and successful completion.
+2. Accept incremental tool catalogs at their original conversation positions in Responses Lite.
+3. Add GPT-6.1 Terra and GPT-Image-2.5 Sunburst/Flare to proxy model controls, and include Terra's native Codex model metadata. Existing Key restrictions remain in effect; upstream account access is still required.
+4. Desktop release only; npm CLI packages are not published in this release.
+
+#### 中文
+
+1. HTTP SSE 和 WebSocket 的 Responses 流中断时返回明确失败，保留已有输出并正确区分正常完成。
+2. 修复 Responses Lite 拒绝会话中增量工具目录的问题，保留工具加入顺序。
+3. 反代模型控制新增 GPT-6.1 Terra、GPT-Image-2.5 Sunburst/Flare，并提供 Terra 的原生 Codex 模型目录。已有 Key 权限不变，仍需上游账号具有相应模型权限。
+4. 本次只发布桌面版本，暂不发布 npm CLI 包。
+
 - v3.1.3
 
 #### English

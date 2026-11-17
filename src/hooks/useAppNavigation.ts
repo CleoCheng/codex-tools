@@ -7,6 +7,7 @@ export function useAppNavigation(
   onSelectTab: (tab: AppTab) => void,
   c: CodexController,
   onFindAccount: () => void,
+  codexEnabled = true,
 ) {
   const {
     checkForAppUpdate,
@@ -19,8 +20,10 @@ export function useAppNavigation(
     mainWindowVisible,
     loading,
     tokenUsage,
+    recoveryRequired,
   } = c;
   useEffect(() => {
+    if (recoveryRequired) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (
         document.querySelector(
@@ -33,6 +36,7 @@ export function useAppNavigation(
         : event.ctrlKey;
       if (!modifier || event.altKey || event.shiftKey) return;
       const key = event.key.toLowerCase();
+      if (!codexEnabled && !["1", "4", ","].includes(key)) return;
       const tabs: AppTab[] = ["accounts", "analytics", "proxy", "settings"];
       if (/^[1-4]$/.test(key)) {
         event.preventDefault();
@@ -61,6 +65,8 @@ export function useAppNavigation(
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
+    recoveryRequired,
+    codexEnabled,
     activeTab,
     onSelectTab,
     onOpenAddDialog,
@@ -71,6 +77,7 @@ export function useAppNavigation(
     loadApiProxyStatus,
   ]);
   useEffect(() => {
+    if (recoveryRequired) return;
     let disposed = false;
     const unlisteners: UnlistenFn[] = [];
     const register = async () => {
@@ -97,9 +104,11 @@ export function useAppNavigation(
       disposed = true;
       unlisteners.forEach((unlisten) => unlisten());
     };
-  }, [checkForAppUpdate, onSelectTab, updateSettings]);
+  }, [checkForAppUpdate, onSelectTab, updateSettings, recoveryRequired]);
   useEffect(() => {
     if (
+      !codexEnabled ||
+      recoveryRequired ||
       loading ||
       (activeTab !== "accounts" && activeTab !== "analytics") ||
       !mainWindowVisible
@@ -108,5 +117,5 @@ export function useAppNavigation(
     const updatedAtMs = (tokenUsage?.updatedAt ?? 0) * 1000;
     if (updatedAtMs > 0 && Date.now() < updatedAtMs + 5 * 60 * 1000) return;
     void refreshTokenUsage(true);
-  }, [activeTab, loading, mainWindowVisible, refreshTokenUsage, tokenUsage]);
+  }, [activeTab, codexEnabled, loading, mainWindowVisible, refreshTokenUsage, tokenUsage, recoveryRequired]);
 }
