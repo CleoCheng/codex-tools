@@ -91,11 +91,67 @@ impl WindowKind {
     }
 }
 
+/// 与前端 `classifyUsageRefreshError` 的 authorization 分支保持同一口径。
+/// 额度刷新因凭据失效而失败时，账号不能作为自动切换的候选；网络超时、
+/// 429、5xx 等临时错误不算，避免把一次抖动当成账号永久失效。
+fn usage_error_is_authorization_failure(raw: &str) -> bool {
+    let normalized = raw.to_ascii_lowercase();
+    let has = |needle: &str| normalized.contains(needle);
+
+    // 顺序与前端一致：临时性分类优先于授权分类。
+    if has("timeout") || has("timed out") || has("超时") {
+        return false;
+    }
+    if has("429")
+        || has("too many requests")
+        || has("rate limit")
+        || has("usage_limit_reached")
+        || has("请求过于频繁")
+        || has("用量限制")
+    {
+        return false;
+    }
+    if has("500")
+        || has("502")
+        || has("503")
+        || has("504")
+        || has("service unavailable")
+        || has("bad gateway")
+        || has("internal server error")
+        || has("circuit_open")
+        || has("服务不可用")
+    {
+        return false;
+    }
+
+    has("401")
+        || has("403")
+        || has("unauthorized")
+        || has("forbidden")
+        || has("invalid_grant")
+        || has("access token")
+        || has("refresh token")
+        || has("authorization")
+        || has("authentication")
+        || has("授权")
+        || has("令牌")
+        || has("重新登录")
+        || has("账号被封禁")
+        || has("deactivated")
+        || has("account blocked")
+        || has("token_revoked")
+        || has("invalidated oauth token")
+}
+
 fn account_has_blocking_issue(account: &AccountSummary) -> bool {
     account.auth_refresh_blocked
         || account.profile_integrity_error.is_some()
         || account.profile_last_validation_error.is_some()
         || account.auth_refresh_error.is_some()
+        || account
+            .usage_error
+            .as_deref()
+            .is_some_and(usage_error_is_authorization_failure)
 }
 
 /// 默认 100%，即任一窗口用满才视为耗尽。
@@ -616,6 +672,37 @@ mod tests {
         ];
         let picked = pick_switch_candidate(&summaries, WindowKind::FiveHour, "current")
             .expect("a candidate should remain");
+        assert_eq!(picked.id, "best");
+    }
+
+    #[test]
+    fn authorization_usage_error_disqualifies_a_switch_candidate() {
+        let mut revoked = account("revoked", false, Some(10.0), Some(5.0));
+        revoked.usage_error = Some(
+            "请求用量接口失败: https://chatgpt.com/backend-api/wham/usage -> 401 \
+             Unauthorized: Encountered invalidated oauth token for user, failing request, \
+             code token_revoked"
+                .to_string(),
+        );
+        // Without the guard, "revoked" would win: its weekly window has more
+        // remaining quota than the healthy account.
+        let summaries = vec![
+            account("current", true, Some(100.0), Some(10.0)),
+            revoked,
+            account("usable", false, Some(60.0), Some(20.0)),
+        ];
+        let picked = pick_switch_candidate(&summaries, WindowKind::FiveHour, "current")
+            .expect("a healthy candidate should remain");
+        assert_eq!(picked.id, "usable");
+    }
+
+    #[test]
+    fn transient_usage_error_does_not_disqualify_a_switch_candidate() {
+        let mut flaky = account("best", false, Some(70.0), Some(5.0));
+        flaky.usage_error = Some("network connection failed".to_string());
+        let summaries = vec![account("current", true, Some(100.0), Some(10.0)), flaky];
+        let picked = pick_switch_candidate(&summaries, WindowKind::FiveHour, "current")
+            .expect("a transient error must not block the candidate");
         assert_eq!(picked.id, "best");
     }
 

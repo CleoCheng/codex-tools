@@ -20,6 +20,8 @@ test("authorization usage refresh failures count as blocking account issues", ()
     "invalid_grant",
     "需要重新登录",
     "account blocked / deactivated",
+    // Real shape observed in accounts.json: a multi-endpoint refresh summary.
+    "请求用量接口失败: https://chatgpt.com/backend-api/wham/usage -> 401 Unauthorized: Encountered invalidated oauth token for user, failing request, code token_revoked",
   ];
   for (const error of authorizationErrors) {
     assert.equal(accountHasAuthorizationUsageError(account(error)), true, error);
