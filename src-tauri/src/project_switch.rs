@@ -277,6 +277,28 @@ fn make_plan_with_reader(
     })
 }
 pub(crate) fn preview(paths: &SwitchPaths, target: &str) -> Result<ProjectSwitchPreview, String> {
+    // Switching an account is what writes ~/.codex/auth.json. On a fresh install
+    // (or before Codex CLI has ever logged in) there is no current login and
+    // therefore no current account whose projects or session ownership could be
+    // preserved. make_plan() treats auth.json as a required input and would fail
+    // with PROJECT_SHARING_INVALID_STATE, which aborts the whole switch in the
+    // frontend preview step. Report a no-op preview instead.
+    let current_auth = paths.codex_home.join("auth.json");
+    if !current_auth.is_file() {
+        log::info!(
+            "preview: no current {} - report a no-op local-project preview",
+            current_auth.display()
+        );
+        return Ok(ProjectSwitchPreview {
+            project_count: 0,
+            thread_link_count: 0,
+            unassigned_thread_count: 0,
+            retained_target_project_count: 0,
+            requires_merge_confirmation: false,
+            preview_fingerprint: "no-current-auth".into(),
+            no_op: true,
+        });
+    }
     Ok(make_plan(paths, target, None)?.preview)
 }
 fn prepared(plan: &Plan, status: &str) -> PreparedSwitch {
