@@ -6,6 +6,32 @@ fn switched_account(f: &Fixture) -> crate::models::SwitchAccountResult {
 }
 
 #[tokio::test]
+async fn invalid_local_state_continues_to_ordinary_account_switch() {
+    let f = fixture(1, 1, 1);
+    let original = tracked_tree(f.paths.codex_home.parent().unwrap());
+    let calls = Cell::new(0);
+    let result = best_effort::finish_switch(
+        Err("PROJECT_SHARING_INVALID_STATE".to_string()),
+        || async {
+            calls.set(calls.get() + 1);
+            let _lock = legacy_switch_lock(&f.paths)?;
+            assert_eq!(original, tracked_tree(f.paths.codex_home.parent().unwrap()));
+            Ok(switched_account(&f))
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(calls.get(), 1);
+    assert_eq!(result.account_id, "synthetic-account-b");
+    let preservation = result.local_project_preservation.unwrap();
+    assert_eq!(preservation.status, "skipped");
+    assert_eq!(
+        preservation.warning.as_deref(),
+        Some("PROJECT_SHARING_INVALID_STATE")
+    );
+}
+
+#[tokio::test]
 async fn broken_session_files_continue_to_account_switch_without_rewriting_them() {
     for body in [b"{\n broken".as_slice(), b"null", b"\xef\xbb\xbf{}"] {
         let f = fixture(1, 1, 1);

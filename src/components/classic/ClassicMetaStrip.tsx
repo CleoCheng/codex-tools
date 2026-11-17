@@ -1,6 +1,9 @@
 import { useI18n } from "../../i18n/I18nProvider";
 import type { AccountSummary, AutoSwitchStatus } from "../../types/app";
-import { remainingPercent } from "../../utils/usage";
+import {
+  accountHasBlockingIssue,
+  accountHasExhaustedWindow,
+} from "../accounts/accountModel";
 
 type MetaStripProps = {
   accounts: AccountSummary[];
@@ -71,24 +74,6 @@ function MetricIcon({ tone }: MetricIconProps) {
   );
 }
 
-function hasBlockingAccountIssue(account: AccountSummary): boolean {
-  return Boolean(
-    account.authRefreshBlocked ||
-      account.profileIntegrityError ||
-      account.profileLastValidationError ||
-      account.authRefreshError,
-  );
-}
-
-function hasExhaustedWindow(account: AccountSummary): boolean {
-  return [account.usage?.fiveHour ?? null, account.usage?.oneWeek ?? null].some(
-    (window) => {
-      const remaining = remainingPercent(window);
-      return remaining !== null && remaining <= 0;
-    },
-  );
-}
-
 export function ClassicMetaStrip({
   accounts,
   exportingAccounts,
@@ -97,15 +82,15 @@ export function ClassicMetaStrip({
 }: MetaStripProps) {
   const { copy, locale } = useI18n();
   const isChinese = locale === "zh-CN";
-  const issueCount = accounts.filter(hasBlockingAccountIssue).length;
+  const issueCount = accounts.filter(accountHasBlockingIssue).length;
   const exhaustedCount = accounts.filter(
     (account) =>
-      !hasBlockingAccountIssue(account) && hasExhaustedWindow(account),
+      !accountHasBlockingIssue(account) && accountHasExhaustedWindow(account),
   ).length;
   const activeCount = accounts.filter(
     (account) =>
-      !hasBlockingAccountIssue(account) &&
-      !hasExhaustedWindow(account) &&
+      !accountHasBlockingIssue(account) &&
+      !accountHasExhaustedWindow(account) &&
       account.profileAuthReady,
   ).length;
   const metrics: Array<{

@@ -1,7 +1,8 @@
 import type { AccountSummary } from "../../types/app";
 import type { AccountStatus } from "./types";
-import { compareAccountsByRemaining } from "../../utils/accountRanking";
-import { remainingPercent } from "../../utils/usage";
+import { compareAccountsByRemaining } from "../../utils/accountRanking.ts";
+import { remainingPercent } from "../../utils/usage.ts";
+import { classifyUsageRefreshError } from "../../utils/usageRefreshError.ts";
 
 const PLAN_PRIORITY: Record<string, number> = {
   api: 0,
@@ -37,12 +38,25 @@ export function sortVariantsForGroup(
   return compareAccountsByRemaining(left, right);
 }
 
+// A cached usage snapshot with a 401/403 (or equivalent authorization) refresh
+// failure means the stored credentials are no longer usable. It is a blocking
+// account issue just like a failed auth refresh, not a transient network error.
+export function accountHasAuthorizationUsageError(
+  account: AccountSummary,
+): boolean {
+  return (
+    Boolean(account.usageError) &&
+    classifyUsageRefreshError(account.usageError ?? "") === "authorization"
+  );
+}
+
 export function accountHasBlockingIssue(account: AccountSummary): boolean {
   return Boolean(
     account.authRefreshBlocked ||
       account.profileIntegrityError ||
       account.profileLastValidationError ||
-      account.authRefreshError,
+      account.authRefreshError ||
+      accountHasAuthorizationUsageError(account),
   );
 }
 
@@ -54,7 +68,8 @@ export function accountIssueReason(
     account.profileIntegrityError ||
     account.profileLastValidationError ||
     account.authRefreshError ||
-    (account.authRefreshBlocked ? fallbackReason : null)
+    (account.authRefreshBlocked ? fallbackReason : null) ||
+    (accountHasAuthorizationUsageError(account) ? account.usageError : null)
   );
 }
 

@@ -2187,7 +2187,21 @@ async fn switch_account_and_launch(
     local_project_preview_fingerprint: Option<String>,
 ) -> Result<SwitchAccountResult, String> {
     let preserve_paths = local_project_switch_paths(&app)?;
-    if project_switch::enabled_at_path(&preserve_paths.store_path)? {
+    // Switching an account is what writes ~/.codex/auth.json in the first place.
+    // On a fresh install (or before Codex CLI has ever logged in) that file does
+    // not exist yet, so there is no "current account" whose projects or session
+    // ownership could be preserved. The upstream preservation layer treats
+    // auth.json as a required input and fails with PROJECT_SHARING_INVALID_STATE;
+    // skip that layer and perform the ordinary switch instead.
+    let current_auth_path = preserve_paths.codex_home.join("auth.json");
+    let has_current_auth = current_auth_path.is_file();
+    if !has_current_auth {
+        log::info!(
+            "switch: current auth.json is missing ({}), skip local-project preservation",
+            current_auth_path.display()
+        );
+    }
+    if has_current_auth && project_switch::enabled_at_path(&preserve_paths.store_path)? {
         let attempt = account_switch::preservation::switch(
             &app,
             state.inner(),

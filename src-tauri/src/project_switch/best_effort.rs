@@ -15,7 +15,12 @@ where
     };
     if !matches!(
         error.as_str(),
-        SYNC_FAILED | "PROJECT_SHARING_UNSUPPORTED_IDENTITY" | "PROJECT_SHARING_UNSUPPORTED_ROUTE"
+        SYNC_FAILED
+            | "PROJECT_SHARING_UNSUPPORTED_IDENTITY"
+            | "PROJECT_SHARING_UNSUPPORTED_ROUTE"
+            // Unreadable/missing local state must not block an ordinary switch:
+            // preservation is best effort and has not written anything yet.
+            | "PROJECT_SHARING_INVALID_STATE"
     ) {
         return Err(error);
     }
