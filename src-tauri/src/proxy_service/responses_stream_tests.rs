@@ -2,19 +2,20 @@ use super::*;
 
 fn storage() -> ProxyStorageContext {
     // Fixtures have no usage: the writer never opens this path or any database.
-    ProxyStorageContext {
-        data_dir: std::env::temp_dir().join(format!("responses-test-{}", uuid::Uuid::new_v4())),
-        store_lock: Arc::new(tokio::sync::Mutex::new(())),
-        auth_refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
-        usage_writer: Arc::new(tokio::sync::Mutex::new(None)),
-        sync_active_auth_on_refresh: false,
-    }
+    super::new_proxy_storage_context(
+        std::env::temp_dir().join(format!("responses-test-{}", uuid::Uuid::new_v4())),
+        Arc::new(tokio::sync::Mutex::new(())),
+        Arc::new(tokio::sync::Mutex::new(())),
+        false,
+    )
 }
 
 fn metadata() -> ApiProxyUsageMetadata {
     ApiProxyUsageMetadata {
         key_id: None,
         key_label: None,
+        account_key: None,
+        is_chatgpt: false,
         model: "gpt-6.1-sol".into(),
         route: "/v1/responses".into(),
         reasoning_effort: None,

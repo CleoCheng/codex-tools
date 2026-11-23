@@ -12,6 +12,20 @@
 .higApp .accountsSummary .metricCopy { flex-direction: row; align-items: baseline; gap: 8px; }
 .higApp .accountsSummary .metricCopy span { font-size: 12px; font-weight: 400; }
 .higApp .accountsSummary .metricCopy strong { font-size: 14px; font-weight: 600; }
+.higApp .accountsSummary .autoSwitchQuickToggle {
+  flex: 1 1 100%;
+  padding: 8px 14px;
+  background: var(--bg-1);
+  border-color: var(--line);
+}
+.higApp .accountsSummary .autoSwitchQuickToggle.isEnabled {
+  background: color-mix(in srgb, var(--brand-soft) 72%, var(--bg-1) 28%);
+  border-color: color-mix(in srgb, var(--brand) 34%, var(--line) 66%);
+}
+.higApp .accountsSummary .autoSwitchQuickToggle.isProxyLocked {
+  background: color-mix(in srgb, var(--warning) 10%, var(--bg-1) 90%);
+  border-color: color-mix(in srgb, var(--warning) 36%, var(--line) 64%);
+}
 .higApp .accountTokenUsageStrip { padding: 10px 14px; gap: 12px; background: var(--bg-1); }
 .higApp .accountTokenUsageStrip > strong { font-size: 11px; font-weight: 500; color: var(--subtle); }
 .higApp .accountTokenUsageItems { gap: 16px; }

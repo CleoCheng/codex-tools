@@ -498,7 +498,17 @@ pub(crate) async fn update_account_api_proxy_enabled_internal(
         return Err("未找到要设置反代状态的账号".to_string());
     }
 
+    if let Some(summary) = store.settings.account_fingerprints.get_mut(account_key) {
+        summary.auto_disabled_by_fingerprint = false;
+        summary.auto_disabled_at = None;
+        summary.recovery_attempts = 0;
+        summary.next_recovery_at = None;
+    }
+
     save_store(app, &store)?;
+    if enabled {
+        crate::fingerprint::clear_account_runtime_quarantine(account_key);
+    }
     Ok(enabled)
 }
 
@@ -1182,18 +1192,18 @@ pub(crate) async fn recover_refresh_failure_from_latest_snapshot(
     None
 }
 
-struct AuthOperationRefreshSuccess {
-    auth_json: serde_json::Value,
-    persist_error: Option<String>,
+pub(crate) struct AuthOperationRefreshSuccess {
+    pub(crate) auth_json: serde_json::Value,
+    pub(crate) persist_error: Option<String>,
 }
 
-struct AuthOperationRefreshFailure {
-    auth_refresh_blocked: bool,
-    auth_refresh_error: Option<String>,
-    refresh_error: Option<String>,
+pub(crate) struct AuthOperationRefreshFailure {
+    pub(crate) auth_refresh_blocked: bool,
+    pub(crate) auth_refresh_error: Option<String>,
+    pub(crate) refresh_error: Option<String>,
 }
 
-async fn refresh_account_auth_with_operation_guard(
+pub(crate) async fn refresh_account_auth_with_operation_guard(
     app: &AppHandle,
     state: &AppState,
     account_key: &str,

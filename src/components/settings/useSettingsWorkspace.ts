@@ -13,6 +13,7 @@ export function useSettingsWorkspace({
   onCheckUpdate,
   onOpenExternalUrl,
   settings,
+  codexProxyBound = false,
   accounts,
   installedEditorApps,
   hasOpencodeDesktopApp,
@@ -305,6 +306,7 @@ export function useSettingsWorkspace({
     toggleWarmupAccount,
     openWindowsTaskbarSettings,
     pickCodexLaunchPath,
+    codexProxyBound,
   };
 }
 

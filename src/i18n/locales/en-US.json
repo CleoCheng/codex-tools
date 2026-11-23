@@ -58,7 +58,13 @@
     "tokensSources": "Log files",
     "tokensEvents": "Token events",
     "tokensFailedSources": "Read failures",
-    "exportAll": "Export all"
+    "exportAll": "Export all",
+    "autoSwitchLabel": "Auto-switch",
+    "autoSwitchOn": "On",
+    "autoSwitchOff": "Off",
+    "autoSwitchProxyBadge": "Proxy active",
+    "autoSwitchHint": "Auto-switch & rewrite ~/.codex when quota runs out",
+    "autoSwitchProxyHint": "Codex is proxy-bound and locked off; proxy pool handles failover"
   },
   "addAccount": {
     "smartSwitch": "Smart switch",
@@ -546,6 +552,9 @@
     },
     "autoSwitchOnExhaustion": {
       "label": "Switch accounts automatically when quota runs out",
+      "description": "Automatically switches accounts and rewrites local ~/.codex when 5h/7d quota runs out. Automatically disabled while Codex is bound to the local API proxy.",
+      "proxyLockedNotice": "Codex is currently bound to the local API proxy, so auto-switching is locked off. Upstream accounts fail over inside the proxy without breaking active chats. Restore native Codex config on the Proxy tab to re-enable.",
+      "proxyBadge": "Proxy active",
       "checkedText": "Auto",
       "uncheckedText": "Manual"
     },

@@ -94,7 +94,7 @@ impl WindowKind {
 /// 与前端 `classifyUsageRefreshError` 的 authorization 分支保持同一口径。
 /// 额度刷新因凭据失效而失败时，账号不能作为自动切换的候选；网络超时、
 /// 429、5xx 等临时错误不算，避免把一次抖动当成账号永久失效。
-fn usage_error_is_authorization_failure(raw: &str) -> bool {
+pub(crate) fn usage_error_is_authorization_failure(raw: &str) -> bool {
     let normalized = raw.to_ascii_lowercase();
     let has = |needle: &str| normalized.contains(needle);
 
@@ -212,6 +212,7 @@ fn pick_switch_candidate(
     let mut candidates = summaries
         .iter()
         .filter(|account| account.id != current_id)
+        .filter(|account| account.api_proxy_enabled)
         .filter(|account| matches!(account.source_kind, AccountSourceKind::Chatgpt))
         .filter(|account| !account_has_blocking_issue(account))
         .filter(|account| {
@@ -283,6 +284,9 @@ pub(crate) async fn should_check_auto_switch(
     state: &AppState,
     summaries: &[AccountSummary],
 ) -> bool {
+    if crate::profile_files::is_codex_using_api_proxy() {
+        return false;
+    }
     let enabled = {
         let _guard = state.store_lock.lock().await;
         store::load_store(app)
@@ -296,6 +300,9 @@ pub(crate) async fn should_check_auto_switch(
 }
 
 pub(crate) async fn run_auto_switch(app: &AppHandle, state: &AppState, summaries: &[AccountSummary]) {
+    if crate::profile_files::is_codex_using_api_proxy() {
+        return;
+    }
     let settings = {
         let _guard = state.store_lock.lock().await;
         match store::load_store(app) {
@@ -594,7 +601,7 @@ mod tests {
             usage_error: None,
             auth_refresh_blocked: false,
             auth_refresh_error: None,
-            api_proxy_enabled: false,
+            api_proxy_enabled: true,
             is_current: current,
         }
     }
@@ -817,5 +824,29 @@ mod tests {
         let picked = pick_switch_candidate(&summaries, WindowKind::FiveHour, "current")
             .expect("a candidate should remain");
         assert_eq!(picked.id, "usable");
+    }
+
+    #[test]
+    fn disabled_accounts_are_skipped_by_auto_switch() {
+        let mut disabled = account("disabled-best", false, Some(0.0), Some(0.0));
+        disabled.api_proxy_enabled = false;
+        let summaries = vec![
+            account("current", true, Some(100.0), Some(10.0)),
+            disabled,
+            account("enabled-usable", false, Some(50.0), Some(50.0)),
+        ];
+        let picked = pick_switch_candidate(&summaries, WindowKind::FiveHour, "current")
+            .expect("an enabled candidate should remain");
+        assert_eq!(picked.id, "enabled-usable");
+
+        let only_disabled = vec![
+            account("current", true, Some(100.0), Some(10.0)),
+            {
+                let mut a = account("disabled", false, Some(0.0), Some(0.0));
+                a.api_proxy_enabled = false;
+                a
+            },
+        ];
+        assert!(pick_switch_candidate(&only_disabled, WindowKind::FiveHour, "current").is_none());
     }
 }

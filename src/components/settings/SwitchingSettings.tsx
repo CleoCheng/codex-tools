@@ -8,6 +8,7 @@ export function SwitchingSettings({
 }) {
   const {
     settings,
+    codexProxyBound,
     installedEditorApps,
     hasOpencodeDesktopApp,
     savingSettings,
@@ -63,17 +64,37 @@ export function SwitchingSettings({
       />
 
       <SwitchField
-        checked={settings.autoSwitchOnExhaustion}
-        onChange={(checked) =>
-          onUpdateSettings({ autoSwitchOnExhaustion: checked })
-        }
+        checked={codexProxyBound ? false : settings.autoSwitchOnExhaustion}
+        onChange={(checked) => {
+          if (codexProxyBound) {
+            return;
+          }
+          onUpdateSettings({ autoSwitchOnExhaustion: checked });
+        }}
         label={copy.settings.autoSwitchOnExhaustion.label}
+        description={
+          <>
+            <span>{copy.settings.autoSwitchOnExhaustion.description}</span>
+            {codexProxyBound ? (
+              <span className="settingProxyLockedNotice">
+                {copy.settings.autoSwitchOnExhaustion.proxyLockedNotice}
+              </span>
+            ) : null}
+          </>
+        }
+        badge={
+          codexProxyBound ? (
+            <span className="settingProxyBadge">
+              {copy.settings.autoSwitchOnExhaustion.proxyBadge}
+            </span>
+          ) : undefined
+        }
         checkedText={copy.settings.autoSwitchOnExhaustion.checkedText}
         uncheckedText={copy.settings.autoSwitchOnExhaustion.uncheckedText}
-        disabled={savingSettings}
+        disabled={savingSettings || codexProxyBound}
       />
 
-      {settings.autoSwitchOnExhaustion ? (
+      {!codexProxyBound && settings.autoSwitchOnExhaustion ? (
         <SwitchField
           checked={settings.autoContinueAfterSwitch}
           onChange={(checked) =>
@@ -87,7 +108,9 @@ export function SwitchingSettings({
         />
       ) : null}
 
-      {settings.autoSwitchOnExhaustion && settings.autoContinueAfterSwitch ? (
+      {!codexProxyBound &&
+      settings.autoSwitchOnExhaustion &&
+      settings.autoContinueAfterSwitch ? (
         <div className="settingRow settingRowCompact settingRowNested">
           <div className="settingMeta">
             <strong>{copy.settings.autoContinueWindow.label}</strong>

@@ -30,6 +30,10 @@ export function ClassicAccountToolbar({
           }
         >
           <option value="all">{text.allStatuses}</option>
+          <option value="normal">{text.filterNormal}</option>
+          <option value="degraded">{text.filterDegraded}</option>
+          <option value="enabled">{text.filterEnabled}</option>
+          <option value="disabled">{text.filterDisabled}</option>
           <option value="using">{text.statusUsing}</option>
           <option value="available">{text.statusAvailable}</option>
           <option value="low">{text.statusLow}</option>

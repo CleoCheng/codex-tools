@@ -61,12 +61,23 @@ export function useAccountsWorkspace(props: AccountsGridProps) {
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
+      const fp = props.accountFingerprints?.[account.accountKey];
+      const matchesStatus =
+        statusFilter === "all" ||
+        (statusFilter === "using"
+          ? variants.some((a) => a.isCurrent)
+          : statusFilter === "enabled"
+            ? account.apiProxyEnabled !== false
+            : statusFilter === "disabled"
+              ? account.apiProxyEnabled === false
+              : statusFilter === "degraded"
+                ? fp?.degraded === true
+                : statusFilter === "normal"
+                  ? fp !== undefined && fp.degraded === false && !fp.error
+                  : accountStatus(account) === statusFilter);
       return (
         (!search || haystack.includes(search)) &&
-        (statusFilter === "all" ||
-          (statusFilter === "using"
-            ? variants.some((a) => a.isCurrent)
-            : accountStatus(account) === statusFilter)) &&
+        matchesStatus &&
         (planFilter === "all" ||
           (
             account.planType ||
@@ -75,7 +86,7 @@ export function useAccountsWorkspace(props: AccountsGridProps) {
           ).toLowerCase() === planFilter)
       );
     });
-  }, [rows, query, statusFilter, planFilter]);
+  }, [rows, query, statusFilter, planFilter, props.accountFingerprints]);
 
   const inspectedAccount = accounts.find((a) => a.id === inspectedId) ?? null;
   const currentAccount = accounts.find((a) => a.isCurrent) ?? null;

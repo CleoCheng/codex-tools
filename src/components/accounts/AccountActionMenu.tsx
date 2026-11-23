@@ -52,6 +52,23 @@ export function AccountActionMenu({
             disabled: actions.warmingAccountId !== null || actions.authBusy,
             action: () => void actions.onWarmup(account),
           },
+          ...(actions.onProbeFingerprints
+            ? [
+                {
+                  label: actions.probingAccountKeys?.includes(account.accountKey)
+                    ? text.fingerprintProbing
+                    : text.fingerprintAction,
+                  icon: "warmup" as const,
+                  disabled:
+                    Boolean(
+                      actions.probingAccountKeys?.includes(account.accountKey),
+                    ) ||
+                    Boolean(actions.probingAllFingerprints) ||
+                    actions.authBusy,
+                  action: () => void actions.onProbeFingerprints?.([account]),
+                },
+              ]
+            : []),
         ]
       : []),
     {

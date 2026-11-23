@@ -520,8 +520,64 @@ export type AppSettings = {
   autoAccountWarmupAccountIds: string[];
   codexAnalyticsWeeklyBudgetUsd: number | null;
   remoteServers: RemoteServerConfig[];
+  accountFingerprints: Record<string, AccountFingerprintSummary>;
   locale: AppLocale;
   skippedUpdateVersion: string | null;
+};
+
+export type ModelFingerprintProbe = {
+  targetModel: string;
+  effort: string;
+  degraded: boolean;
+  skipped?: boolean;
+  detectedModel: string;
+  detectedModelId: string;
+  confidence: number | null;
+  score: number | null;
+  runnerUpModel: string | null;
+  runnerUpScore: number | null;
+  validSamples: number;
+  totalSamples: number;
+  ttftMs: number | null;
+  error: string | null;
+};
+
+export type AccountFingerprintSummary = {
+  degraded: boolean;
+  targetModel: string;
+  detectedModel: string;
+  detectedModelId: string;
+  confidence: number | null;
+  score: number | null;
+  runnerUpModel: string | null;
+  runnerUpScore: number | null;
+  validSamples: number;
+  totalSamples: number;
+  ttftMs: number | null;
+  checkedAt: number;
+  error: string | null;
+  sol?: ModelFingerprintProbe | null;
+  astra?: ModelFingerprintProbe | null;
+  autoDisabledByFingerprint?: boolean;
+  autoDisabledAt?: number | null;
+  recoveryAttempts?: number;
+  nextRecoveryAt?: number | null;
+};
+
+export type ProbeAccountFingerprintsResult = {
+  accounts: AccountSummary[];
+  accountFingerprints: Record<string, AccountFingerprintSummary>;
+};
+
+export type AccountFingerprintProgressEvent = {
+  accountKey: string;
+  status: string;
+  completedSamples: number;
+  totalSamples: number;
+  message: string | null;
+  summary: AccountFingerprintSummary | null;
+  apiProxyEnabled: boolean | null;
+  trigger?: string | null;
 };
 
 export type AutoSwitchStatus = {

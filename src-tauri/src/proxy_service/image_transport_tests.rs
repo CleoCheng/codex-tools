@@ -76,18 +76,17 @@ impl ImageMock {
 
     fn context(&self) -> ProxyContext {
         ProxyContext {
-            storage: ProxyStorageContext {
+            storage: super::new_proxy_storage_context(
                 // These responses intentionally contain no usage, so the storage
                 // path is unique but never created and needs no filesystem cleanup.
-                data_dir: std::env::temp_dir().join(format!(
+                std::env::temp_dir().join(format!(
                     "codex-image-transport-test-{}",
                     uuid::Uuid::new_v4()
                 )),
-                store_lock: Arc::new(tokio::sync::Mutex::new(())),
-                auth_refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
-                usage_writer: Arc::new(tokio::sync::Mutex::new(None)),
-                sync_active_auth_on_refresh: false,
-            },
+                Arc::new(tokio::sync::Mutex::new(())),
+                Arc::new(tokio::sync::Mutex::new(())),
+                false,
+            ),
             api_keys: Arc::new(RwLock::new(Vec::new())),
             upstream_base_url: format!("{}/backend-api/codex", self.base_url),
             client: reqwest::Client::builder()
@@ -133,6 +132,8 @@ fn image_usage_metadata() -> ApiProxyUsageMetadata {
     ApiProxyUsageMetadata {
         key_id: None,
         key_label: None,
+        account_key: None,
+        is_chatgpt: false,
         model: "gpt-image-2".to_string(),
         route: "/v1/images/generations".to_string(),
         reasoning_effort: None,

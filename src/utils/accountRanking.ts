@@ -58,17 +58,20 @@ export function sortAccountsByRemaining(accounts: AccountSummary[]): AccountSumm
 }
 
 export function pickBestRemainingAccount(accounts: AccountSummary[]): AccountSummary | null {
-  if (accounts.length === 0) {
+  const enabledAccounts = accounts.filter((account) => account.apiProxyEnabled !== false);
+  if (enabledAccounts.length === 0) {
     return null;
   }
-  return sortAccountsByRemaining(accounts)[0] ?? null;
+  return sortAccountsByRemaining(enabledAccounts)[0] ?? null;
 }
 
 export function pickBestSmartSwitchAccount(
   accounts: AccountSummary[],
   includeApiFallback: boolean,
 ): AccountSummary | null {
-  const sorted = sortAccountsByRemaining(accounts);
+  const sorted = sortAccountsByRemaining(
+    accounts.filter((account) => account.apiProxyEnabled !== false),
+  );
   if (sorted.length === 0) {
     return null;
   }

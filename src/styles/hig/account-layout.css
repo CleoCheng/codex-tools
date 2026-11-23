@@ -1,4 +1,4 @@
-.higApp .uiAccountRow { display: grid; grid-template-columns: minmax(180px, 1.4fr) minmax(100px, 1fr) minmax(100px, 1fr) 32px max-content; grid-template-areas: "identity five week proxy actions"; gap: 8px 14px; padding: 12px 12px; min-height: 68px; align-items: center; }
+.higApp .uiAccountRow { display: grid; grid-template-columns: minmax(180px, 1.4fr) minmax(100px, 1fr) minmax(100px, 1fr) 38px max-content; grid-template-areas: "identity five week proxy actions"; gap: 8px 14px; padding: 12px 12px; min-height: 68px; align-items: center; }
 .higApp .uiAccountRow .accountIdentityCell { grid-area: identity; min-width: 0; position: relative; }
 .higApp .uiAccountRow .accountUsageFive { grid-area: five; }
 .higApp .uiAccountRow .accountUsageWeek { grid-area: week; }
@@ -28,7 +28,7 @@
 }
 
 /* Keep the name on its own line; secondary metadata shares the line below. */
-.higApp .uiAccountRow .accountTitleLine { padding-right: 0; }
+.higApp .uiAccountRow .accountTitleLine { padding-right: 0; flex-wrap: wrap; gap: 5px 6px; }
 .higApp .uiAccountRow .accountStateLine { gap: 4px 8px; }
 .higApp .accountRowMetrics { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-width: 0; color: var(--subtle); font-size: 10px; }
 .higApp .accountRowMetrics > span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }

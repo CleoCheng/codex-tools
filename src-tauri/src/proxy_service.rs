@@ -44,8 +44,9 @@ mod responses_lite;
 use image_transport::{native_image_payload, validate_native_image_response};
 use model_catalog::{
     is_responses_lite_model, map_client_model_to_upstream, normalize_model_for_client,
-    upstream_codex_client_identity, CODEX_CLIENT_VERSION, CODEX_USER_AGENT, MODELS,
+    upstream_codex_client_identity, MODELS,
 };
+pub(crate) use model_catalog::{CODEX_CLIENT_VERSION, CODEX_USER_AGENT};
 use responses_lite::normalize_responses_lite_payload;
 #[cfg(test)]
 #[path = "proxy_service/astra_tests.rs"]
@@ -197,7 +198,7 @@ const SSE_DONE: &str = "data: [DONE]\n\n";
 const RELAY_IMAGE_CONTROLLER_MODEL: &str = "gpt-5.5";
 const DEFAULT_IMAGE_TOOL_MODEL: &str = "gpt-image-2";
 const DEFAULT_UPSTREAM_SERVICE_TIER: &str = "default";
-const RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";
+pub(crate) const RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";
 const IMAGE_VARIATION_PROMPT: &str = "Create a faithful variation of the provided image.";
 const COMPACT_SSE_KEEPALIVE: &str =
     "event: response.in_progress\ndata: {\"type\":\"response.in_progress\"}\n\n";
@@ -259,6 +260,24 @@ const SESSION_AFFINITY_PAYLOAD_KEYS: &[&str] = &[
     "previousResponseId",
 ];
 
+#[cfg(feature = "desktop")]
+#[derive(Clone, Debug)]
+pub(crate) struct ProxySentinelObservation {
+    pub(crate) account_key: String,
+    pub(crate) model: String,
+    pub(crate) response_model: Option<String>,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) input_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
+    pub(crate) reasoning_tokens: Option<i64>,
+}
+
+#[cfg(feature = "desktop")]
+pub(crate) struct ProxySentinelDispatch {
+    pub(crate) observation: ProxySentinelObservation,
+    pub(crate) verification_tx: Option<tokio::sync::oneshot::Sender<bool>>,
+}
+
 #[derive(Clone)]
 pub(crate) struct ProxyStorageContext {
     pub(crate) data_dir: PathBuf,
@@ -266,6 +285,8 @@ pub(crate) struct ProxyStorageContext {
     pub(crate) auth_refresh_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) usage_writer: Arc<tokio::sync::Mutex<Option<ApiProxyUsageWriter>>>,
     pub(crate) sync_active_auth_on_refresh: bool,
+    #[cfg(feature = "desktop")]
+    pub(crate) sentinel_tx: Option<tokio::sync::mpsc::UnboundedSender<ProxySentinelDispatch>>,
 }
 
 #[derive(Clone)]
@@ -299,6 +320,8 @@ struct ProxyCandidateSelection {
 struct ApiProxyUsageMetadata {
     key_id: Option<String>,
     key_label: Option<String>,
+    account_key: Option<String>,
+    is_chatgpt: bool,
     model: String,
     route: String,
     reasoning_effort: Option<String>,
@@ -311,6 +334,7 @@ struct ApiProxyTokenUsageBreakdown {
     input_tokens: Option<i64>,
     output_tokens: Option<i64>,
     cached_input_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -490,20 +514,33 @@ enum CodexUpstreamResponse {
         headers: HeaderMap,
         stream: UpstreamByteStream,
     },
+    Stream {
+        headers: HeaderMap,
+        stream: UpstreamByteStream,
+    },
+}
+
+async fn collect_upstream_stream_bytes(mut stream: UpstreamByteStream) -> Result<Bytes, String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        body.extend_from_slice(&chunk);
+    }
+    Ok(Bytes::from(body))
 }
 
 impl CodexUpstreamResponse {
     fn status(&self) -> StatusCode {
         match self {
             Self::Http(response) => response.status(),
-            Self::WebSocket { .. } => StatusCode::OK,
+            Self::WebSocket { .. } | Self::Stream { .. } => StatusCode::OK,
         }
     }
 
     fn headers(&self) -> &HeaderMap {
         match self {
             Self::Http(response) => response.headers(),
-            Self::WebSocket { headers, .. } => headers,
+            Self::WebSocket { headers, .. } | Self::Stream { headers, .. } => headers,
         }
     }
 
@@ -525,7 +562,9 @@ impl CodexUpstreamResponse {
                 };
                 (headers, Box::pin(output))
             }
-            Self::WebSocket { headers, stream } => (headers, stream),
+            Self::WebSocket { headers, stream } | Self::Stream { headers, stream } => {
+                (headers, stream)
+            }
         }
     }
 
@@ -539,16 +578,9 @@ impl CodexUpstreamResponse {
                     .map_err(|error| format!("读取上游响应失败: {error}"))?;
                 Ok((headers, body))
             }
-            Self::WebSocket {
-                headers,
-                mut stream,
-            } => {
-                let mut body = Vec::new();
-                while let Some(chunk) = stream.next().await {
-                    let chunk = chunk?;
-                    body.extend_from_slice(&chunk);
-                }
-                Ok((headers, Bytes::from(body)))
+            Self::WebSocket { headers, stream } | Self::Stream { headers, stream } => {
+                let body = collect_upstream_stream_bytes(stream).await?;
+                Ok((headers, body))
             }
         }
     }
@@ -619,14 +651,14 @@ struct RetryFailureInfo {
 }
 
 #[derive(Default)]
-struct SseDecoder {
+pub(crate) struct SseDecoder {
     buffer: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
-struct SseEvent {
-    event: Option<String>,
-    data: String,
+pub(crate) struct SseEvent {
+    pub(crate) event: Option<String>,
+    pub(crate) data: String,
 }
 
 struct ChatStreamState {
@@ -693,6 +725,8 @@ pub(crate) fn new_proxy_storage_context(
         auth_refresh_lock,
         usage_writer: Arc::new(tokio::sync::Mutex::new(None)),
         sync_active_auth_on_refresh,
+        #[cfg(feature = "desktop")]
+        sentinel_tx: None,
     }
 }
 
@@ -1042,7 +1076,10 @@ pub(crate) async fn start_api_proxy_internal(
     state: &AppState,
     preferred_port: Option<u16>,
 ) -> Result<ApiProxyStatus, String> {
-    let storage = app_proxy_storage_context(app, state)?;
+    let mut storage = app_proxy_storage_context(app, state)?;
+    let (sentinel_tx, sentinel_rx) = tokio::sync::mpsc::unbounded_channel();
+    storage.sentinel_tx = Some(sentinel_tx);
+    crate::fingerprint::spawn_proxy_sentinel(app.clone(), sentinel_rx);
     let status = start_api_proxy_with_runtime(
         &storage,
         &state.api_proxy,
@@ -1330,51 +1367,38 @@ async fn chat_completions_handler(
             Err(message) => return invalid_request_response(&message),
         };
 
-    let upstream = match send_codex_request_over_candidates(
-        &context,
-        &proxy_key,
-        "/v1/chat/completions",
-        CodexUpstreamEndpoint::Responses,
-        &headers,
-        &upstream_payload,
-        session_affinity_key.as_deref(),
-    )
-    .await
-    {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
-
-    let (candidate, upstream_response) = upstream;
-    update_proxy_target(&context, &candidate).await;
-    update_proxy_error(&context, None).await;
-    let usage_metadata = api_proxy_usage_metadata(
-        &proxy_key,
-        &candidate,
-        "/v1/chat/completions",
-        &upstream_payload,
-    );
-
     if downstream_stream {
+        let (upstream_response, usage_metadata) = match execute_streaming_codex_request(
+            &context,
+            &proxy_key,
+            "/v1/chat/completions",
+            &headers,
+            &upstream_payload,
+            session_affinity_key.as_deref(),
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
         build_chat_streaming_response(upstream_response, context.storage.clone(), usage_metadata)
     } else {
-        let (upstream_headers, upstream_body) = match upstream_response.into_bytes().await {
+        let NonStreamingCodexResult {
+            upstream_headers,
+            completed,
+        } = match execute_non_streaming_codex_request(
+            &context,
+            &proxy_key,
+            "/v1/chat/completions",
+            &headers,
+            &upstream_payload,
+            session_affinity_key.as_deref(),
+        )
+        .await
+        {
             Ok(value) => value,
-            Err(error) => {
-                let message = format!("读取 Codex 上游响应失败: {error}");
-                update_proxy_error(&context, Some(message.clone())).await;
-                return json_error_response(StatusCode::BAD_GATEWAY, &message);
-            }
+            Err(response) => return response,
         };
-
-        let completed = match extract_completed_response_from_sse(&upstream_body) {
-            Ok(value) => value,
-            Err(message) => {
-                update_proxy_error(&context, Some(message.clone())).await;
-                return json_error_response(StatusCode::BAD_GATEWAY, &message);
-            }
-        };
-        record_api_proxy_tokens_from_response(&context.storage, &usage_metadata, &completed).await;
 
         let body =
             match serde_json::to_vec(&convert_completed_response_to_chat_completion(&completed)) {
@@ -1425,47 +1449,38 @@ async fn responses_handler(
             Err(message) => return invalid_request_response(&message),
         };
 
-    let upstream = match send_codex_request_over_candidates(
-        &context,
-        &proxy_key,
-        "/v1/responses",
-        CodexUpstreamEndpoint::Responses,
-        &headers,
-        &upstream_payload,
-        session_affinity_key.as_deref(),
-    )
-    .await
-    {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
-
-    let (candidate, upstream_response) = upstream;
-    update_proxy_target(&context, &candidate).await;
-    update_proxy_error(&context, None).await;
-    let usage_metadata =
-        api_proxy_usage_metadata(&proxy_key, &candidate, "/v1/responses", &upstream_payload);
-
     if downstream_stream {
+        let (upstream_response, usage_metadata) = match execute_streaming_codex_request(
+            &context,
+            &proxy_key,
+            "/v1/responses",
+            &headers,
+            &upstream_payload,
+            session_affinity_key.as_deref(),
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
         build_passthrough_sse_response(upstream_response, context.storage.clone(), usage_metadata)
     } else {
-        let (upstream_headers, upstream_body) = match upstream_response.into_bytes().await {
+        let NonStreamingCodexResult {
+            upstream_headers,
+            completed,
+        } = match execute_non_streaming_codex_request(
+            &context,
+            &proxy_key,
+            "/v1/responses",
+            &headers,
+            &upstream_payload,
+            session_affinity_key.as_deref(),
+        )
+        .await
+        {
             Ok(value) => value,
-            Err(error) => {
-                let message = format!("读取 Codex 上游响应失败: {error}");
-                update_proxy_error(&context, Some(message.clone())).await;
-                return json_error_response(StatusCode::BAD_GATEWAY, &message);
-            }
+            Err(response) => return response,
         };
-
-        let completed = match extract_completed_response_from_sse(&upstream_body) {
-            Ok(value) => value,
-            Err(message) => {
-                update_proxy_error(&context, Some(message.clone())).await;
-                return json_error_response(StatusCode::BAD_GATEWAY, &message);
-            }
-        };
-        record_api_proxy_tokens_from_response(&context.storage, &usage_metadata, &completed).await;
 
         let completed = rewrite_response_models_for_client(completed);
         let body = match serde_json::to_vec(&completed) {
@@ -1777,6 +1792,167 @@ async fn finish_compact_success(
     }
 }
 
+struct NonStreamingCodexResult {
+    upstream_headers: HeaderMap,
+    completed: Value,
+}
+
+async fn execute_streaming_codex_request(
+    context: &ProxyContext,
+    proxy_key: &ApiProxyKey,
+    route: &str,
+    headers: &HeaderMap,
+    upstream_payload: &Value,
+    session_affinity_key: Option<&str>,
+) -> Result<(CodexUpstreamResponse, ApiProxyUsageMetadata), Response<Body>> {
+    let (candidate, upstream_response) = send_codex_request_over_candidates(
+        context,
+        proxy_key,
+        route,
+        CodexUpstreamEndpoint::Responses,
+        headers,
+        upstream_payload,
+        session_affinity_key,
+    )
+    .await?;
+    update_proxy_target(context, &candidate).await;
+    update_proxy_error(context, None).await;
+    let usage_metadata = api_proxy_usage_metadata(proxy_key, &candidate, route, upstream_payload);
+    Ok((upstream_response, usage_metadata))
+}
+
+async fn execute_non_streaming_codex_request(
+    context: &ProxyContext,
+    proxy_key: &ApiProxyKey,
+    route: &str,
+    headers: &HeaderMap,
+    upstream_payload: &Value,
+    session_affinity_key: Option<&str>,
+) -> Result<NonStreamingCodexResult, Response<Body>> {
+    let mut excluded_account_keys = HashSet::new();
+    for attempt in 0..=MAX_DEGRADED_REPLAYS {
+        let (candidate, upstream_response, has_alternative_candidate) =
+            send_codex_request_over_candidates_with_exclusions(
+                context,
+                proxy_key,
+                route,
+                CodexUpstreamEndpoint::Responses,
+                headers,
+                upstream_payload,
+                session_affinity_key,
+                &excluded_account_keys,
+            )
+            .await?;
+
+        let (upstream_headers, upstream_body) = match upstream_response.into_bytes().await {
+            Ok(value) => value,
+            Err(error) => {
+                let message = format!("读取 Codex 上游响应失败: {error}");
+                update_proxy_error(context, Some(message.clone())).await;
+                return Err(json_error_response(StatusCode::BAD_GATEWAY, &message));
+            }
+        };
+
+        let completed = match extract_completed_response_from_sse(&upstream_body) {
+            Ok(value) => value,
+            Err(message) => {
+                update_proxy_error(context, Some(message.clone())).await;
+                return Err(json_error_response(StatusCode::BAD_GATEWAY, &message));
+            }
+        };
+
+        let usage_metadata =
+            api_proxy_usage_metadata(proxy_key, &candidate, route, upstream_payload);
+        let response_model = response_model_from_value(&completed);
+        let usage = api_proxy_usage_tokens_from_response(&completed);
+
+        let can_replay = attempt < MAX_DEGRADED_REPLAYS
+            && has_alternative_candidate
+            && matches!(&candidate.source_kind, AccountSourceKind::Chatgpt);
+
+        if can_replay {
+            if let Some(ref model_name) = response_model {
+                if is_upstream_response_model_degraded(&usage_metadata.model, model_name) {
+                    log::warn!(
+                        "非流式响应检测到模型降级 account={} requested={} response_model={}，将丢弃当前结果并回调其他账号重放 (attempt={})",
+                        candidate.label,
+                        usage_metadata.model,
+                        model_name,
+                        attempt + 1
+                    );
+                    trigger_mismatch_quarantine(
+                        &context.storage,
+                        &candidate,
+                        &usage_metadata.model,
+                        model_name,
+                        usage_metadata.reasoning_effort.clone(),
+                        usage.as_ref(),
+                    );
+                    excluded_account_keys.insert(candidate.account_key);
+                    continue;
+                }
+            }
+
+            if let Some(usage_breakdown) = usage {
+                let confirmed_degraded = verify_proxy_sentinel_synchronously(
+                    &context.storage,
+                    &usage_metadata,
+                    &usage_breakdown,
+                    response_model.clone(),
+                )
+                .await;
+                if confirmed_degraded {
+                    log::warn!(
+                        "非流式响应被动哨兵复检确认降智 account={} requested={}，将丢弃当前结果并回调其他账号重放 (attempt={})",
+                        candidate.label,
+                        usage_metadata.model,
+                        attempt + 1
+                    );
+                    excluded_account_keys.insert(candidate.account_key);
+                    continue;
+                }
+                update_proxy_target(context, &candidate).await;
+                update_proxy_error(context, None).await;
+                record_api_proxy_usage_tokens_only(
+                    &context.storage,
+                    &usage_metadata,
+                    usage_breakdown,
+                )
+                .await;
+                return Ok(NonStreamingCodexResult {
+                    upstream_headers,
+                    completed,
+                });
+            }
+        }
+
+        update_proxy_target(context, &candidate).await;
+        update_proxy_error(context, None).await;
+        if let Some(usage_breakdown) = usage {
+            notify_proxy_sentinel(
+                &context.storage,
+                &usage_metadata,
+                &usage_breakdown,
+                response_model,
+            );
+            record_api_proxy_usage_tokens_only(
+                &context.storage,
+                &usage_metadata,
+                usage_breakdown,
+            )
+            .await;
+        }
+        return Ok(NonStreamingCodexResult {
+            upstream_headers,
+            completed,
+        });
+    }
+
+    let message = "已跳过确认降智的代理账号，未能找到可用替代账号完成请求".to_string();
+    update_proxy_error(context, Some(message.clone())).await;
+    Err(json_error_response(StatusCode::BAD_GATEWAY, &message))
+}
+
 async fn fetch_compact_upstream_response(
     context: &ProxyContext,
     proxy_key: &ApiProxyKey,
@@ -1785,30 +1961,66 @@ async fn fetch_compact_upstream_response(
     upstream_payload: &Value,
     session_affinity_key: Option<&str>,
 ) -> CompactUpstreamResult {
-    let (candidate, upstream_response) = match send_codex_request_over_candidates(
-        context,
-        proxy_key,
-        route,
-        CodexUpstreamEndpoint::Compact,
-        headers,
-        upstream_payload,
-        session_affinity_key,
-    )
-    .await
-    {
-        Ok(value) => value,
-        Err(response) => return Err(compact_upstream_failure_from_response(response).await),
-    };
+    let mut excluded_account_keys = HashSet::new();
+    for attempt in 0..=MAX_DEGRADED_REPLAYS {
+        let (candidate, upstream_response, has_alternative_candidate) =
+            match send_codex_request_over_candidates_with_exclusions(
+                context,
+                proxy_key,
+                route,
+                CodexUpstreamEndpoint::Compact,
+                headers,
+                upstream_payload,
+                session_affinity_key,
+                &excluded_account_keys,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(response) => return Err(compact_upstream_failure_from_response(response).await),
+            };
 
-    let (upstream_headers, upstream_body) = upstream_response
-        .into_bytes_limited(MAX_COMPACT_RESPONSE_BODY_BYTES)
-        .await
-        .map_err(|error| {
-            CompactUpstreamFailure::gateway(format!("读取 Codex compact 上游响应失败: {error}"))
-        })?;
-    let compact_response =
-        parse_compact_upstream_response(&upstream_body).map_err(CompactUpstreamFailure::gateway)?;
-    Ok((candidate, compact_response, upstream_headers))
+        let (upstream_headers, upstream_body) = upstream_response
+            .into_bytes_limited(MAX_COMPACT_RESPONSE_BODY_BYTES)
+            .await
+            .map_err(|error| {
+                CompactUpstreamFailure::gateway(format!(
+                    "读取 Codex compact 上游响应失败: {error}"
+                ))
+            })?;
+        let compact_response =
+            parse_compact_upstream_response(&upstream_body).map_err(CompactUpstreamFailure::gateway)?;
+
+        if attempt < MAX_DEGRADED_REPLAYS
+            && has_alternative_candidate
+            && matches!(&candidate.source_kind, AccountSourceKind::Chatgpt)
+        {
+            if let (Some(req_model), Some(resp_model)) = (
+                upstream_payload.get("model").and_then(Value::as_str),
+                response_model_from_value(&compact_response),
+            ) {
+                if is_upstream_response_model_degraded(req_model, &resp_model) {
+                    let usage = api_proxy_usage_tokens_from_response(&compact_response);
+                    trigger_mismatch_quarantine(
+                        &context.storage,
+                        &candidate,
+                        req_model,
+                        &resp_model,
+                        api_proxy_reasoning_effort_from_payload(upstream_payload),
+                        usage.as_ref(),
+                    );
+                    excluded_account_keys.insert(candidate.account_key);
+                    continue;
+                }
+            }
+        }
+
+        return Ok((candidate, compact_response, upstream_headers));
+    }
+
+    Err(CompactUpstreamFailure::gateway(
+        "已跳过确认降智的代理账号，未能找到可用替代账号完成 compact 请求",
+    ))
 }
 
 async fn compact_upstream_failure_from_response(
@@ -1935,51 +2147,42 @@ async fn anthropic_messages_handler(
             Err(message) => return invalid_request_response(&message),
         };
 
-    let upstream = match send_codex_request_over_candidates(
-        &context,
-        &proxy_key,
-        "/v1/messages",
-        CodexUpstreamEndpoint::Responses,
-        &headers,
-        &upstream_payload,
-        session_affinity_key.as_deref(),
-    )
-    .await
-    {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
-
-    let (candidate, upstream_response) = upstream;
-    update_proxy_target(&context, &candidate).await;
-    update_proxy_error(&context, None).await;
-    let usage_metadata =
-        api_proxy_usage_metadata(&proxy_key, &candidate, "/v1/messages", &upstream_payload);
-
     if downstream_stream {
+        let (upstream_response, usage_metadata) = match execute_streaming_codex_request(
+            &context,
+            &proxy_key,
+            "/v1/messages",
+            &headers,
+            &upstream_payload,
+            session_affinity_key.as_deref(),
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
         build_anthropic_streaming_response(
             upstream_response,
             context.storage.clone(),
             usage_metadata,
         )
     } else {
-        let (upstream_headers, upstream_body) = match upstream_response.into_bytes().await {
+        let NonStreamingCodexResult {
+            upstream_headers,
+            completed,
+        } = match execute_non_streaming_codex_request(
+            &context,
+            &proxy_key,
+            "/v1/messages",
+            &headers,
+            &upstream_payload,
+            session_affinity_key.as_deref(),
+        )
+        .await
+        {
             Ok(value) => value,
-            Err(error) => {
-                let message = format!("读取 Codex 上游响应失败: {error}");
-                update_proxy_error(&context, Some(message.clone())).await;
-                return json_error_response(StatusCode::BAD_GATEWAY, &message);
-            }
+            Err(response) => return response,
         };
-
-        let completed = match extract_completed_response_from_sse(&upstream_body) {
-            Ok(value) => value,
-            Err(message) => {
-                update_proxy_error(&context, Some(message.clone())).await;
-                return json_error_response(StatusCode::BAD_GATEWAY, &message);
-            }
-        };
-        record_api_proxy_tokens_from_response(&context.storage, &usage_metadata, &completed).await;
 
         let body = match serde_json::to_vec(&convert_completed_response_to_anthropic_message(
             &completed,
@@ -4587,6 +4790,85 @@ impl CodexUpstreamEndpoint {
     }
 }
 
+const SSE_PREFLIGHT_MAX_EVENTS: usize = 3;
+const SSE_PREFLIGHT_MAX_BYTES: usize = 256 * 1024;
+const MAX_DEGRADED_REPLAYS: usize = 2;
+
+enum ResponsesStreamPreflight {
+    Ready(CodexUpstreamResponse),
+    DegradedModel { response_model: String },
+}
+
+fn chain_upstream_chunks(
+    buffered_chunks: Vec<Result<Bytes, String>>,
+    rest: UpstreamByteStream,
+) -> UpstreamByteStream {
+    Box::pin(futures_util::stream::iter(buffered_chunks).chain(rest))
+}
+
+async fn preflight_codex_responses_stream(
+    upstream: CodexUpstreamResponse,
+    requested_model: &str,
+) -> ResponsesStreamPreflight {
+    let (headers, mut stream) = upstream.into_stream();
+    let mut buffered_chunks: Vec<Result<Bytes, String>> = Vec::new();
+    let mut decoder = SseDecoder::default();
+    let mut total_bytes: usize = 0;
+    let mut event_count: usize = 0;
+    let mut inspected_model: Option<String> = None;
+
+    'inspect: while total_bytes < SSE_PREFLIGHT_MAX_BYTES
+        && event_count < SSE_PREFLIGHT_MAX_EVENTS
+    {
+        match stream.next().await {
+            Some(Ok(chunk)) => {
+                total_bytes = total_bytes.saturating_add(chunk.len());
+                let events = decoder.push(&chunk);
+                buffered_chunks.push(Ok(chunk));
+                for event in events {
+                    event_count += 1;
+                    if let Some(model) = api_proxy_response_model_from_sse_event(&event) {
+                        inspected_model = Some(model);
+                        break 'inspect;
+                    }
+                    let event_name = event.event.as_deref().unwrap_or("");
+                    if matches!(
+                        event_name,
+                        "response.output_text.delta" | "response.completed" | "response.failed"
+                    ) || event_count >= SSE_PREFLIGHT_MAX_EVENTS
+                    {
+                        break 'inspect;
+                    }
+                }
+            }
+            Some(Err(err)) => {
+                buffered_chunks.push(Err(err));
+                break;
+            }
+            None => {
+                for event in decoder.finish() {
+                    if let Some(model) = api_proxy_response_model_from_sse_event(&event) {
+                        inspected_model = Some(model);
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    if let Some(response_model) = inspected_model {
+        if is_upstream_response_model_degraded(requested_model, &response_model) {
+            return ResponsesStreamPreflight::DegradedModel { response_model };
+        }
+    }
+
+    ResponsesStreamPreflight::Ready(CodexUpstreamResponse::Stream {
+        headers,
+        stream: chain_upstream_chunks(buffered_chunks, stream),
+    })
+}
+
 async fn send_codex_request_over_candidates(
     context: &ProxyContext,
     proxy_key: &ApiProxyKey,
@@ -4596,6 +4878,30 @@ async fn send_codex_request_over_candidates(
     payload: &Value,
     session_affinity_key: Option<&str>,
 ) -> Result<(ProxyCandidate, CodexUpstreamResponse), Response<Body>> {
+    send_codex_request_over_candidates_with_exclusions(
+        context,
+        proxy_key,
+        route,
+        endpoint,
+        headers,
+        payload,
+        session_affinity_key,
+        &HashSet::new(),
+    )
+    .await
+    .map(|(candidate, upstream, _)| (candidate, upstream))
+}
+
+async fn send_codex_request_over_candidates_with_exclusions(
+    context: &ProxyContext,
+    proxy_key: &ApiProxyKey,
+    route: &str,
+    endpoint: CodexUpstreamEndpoint,
+    headers: &HeaderMap,
+    payload: &Value,
+    session_affinity_key: Option<&str>,
+    excluded_account_keys: &HashSet<String>,
+) -> Result<(ProxyCandidate, CodexUpstreamResponse, bool), Response<Body>> {
     let selection = match load_proxy_candidate_selection(&context.storage).await {
         Ok(selection) => selection,
         Err(error) => {
@@ -4626,13 +4932,29 @@ async fn send_codex_request_over_candidates(
         selection.candidates,
         load_balance,
         current_sequential_account_key.as_deref(),
-    );
+    )
+    .into_iter()
+    .filter(|candidate| !excluded_account_keys.contains(&candidate.account_key))
+    .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Err(json_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "No remaining non-degraded account is available for proxying.",
+        ));
+    }
 
     let mut attempt_errors = Vec::new();
     let mut retriable_failures = Vec::new();
+    let requested_model = payload.get("model").and_then(Value::as_str);
 
-    for mut candidate in candidates {
+    for (candidate_index, mut candidate) in candidates.iter().cloned().enumerate() {
         let mut did_refresh = false;
+        let has_alternative_candidate = candidates.iter().enumerate().any(|(idx, other)| {
+            idx != candidate_index
+                && other.account_key != candidate.account_key
+                && !other.auth_refresh_blocked
+                && !is_candidate_fingerprint_deprioritized(other)
+        });
 
         loop {
             log_proxy_request_route(route);
@@ -4651,6 +4973,42 @@ async fn send_codex_request_over_candidates(
             let status = upstream.status();
             log_proxy_response_route(route, status);
             if status.is_success() {
+                let resolved_endpoint = endpoint.for_candidate(&candidate);
+                let upstream = if matches!(&candidate.source_kind, AccountSourceKind::Chatgpt)
+                    && matches!(resolved_endpoint, CodexUpstreamEndpoint::Responses)
+                {
+                    if let Some(req_model) = requested_model {
+                        match preflight_codex_responses_stream(upstream, req_model).await {
+                            ResponsesStreamPreflight::Ready(stream_response) => stream_response,
+                            ResponsesStreamPreflight::DegradedModel { response_model } => {
+                                log::warn!(
+                                    "流式/响应预检捕获模型降级 account={} requested={} response_model={}，触发隔离探针并切换下一个账号",
+                                    candidate.label,
+                                    req_model,
+                                    response_model
+                                );
+                                trigger_mismatch_quarantine(
+                                    &context.storage,
+                                    &candidate,
+                                    req_model,
+                                    &response_model,
+                                    api_proxy_reasoning_effort_from_payload(payload),
+                                    None,
+                                );
+                                attempt_errors.push(format!(
+                                    "{}: 上游返回疑似降智模型 {}（期望 {}）",
+                                    candidate.label, response_model, req_model
+                                ));
+                                break;
+                            }
+                        }
+                    } else {
+                        upstream
+                    }
+                } else {
+                    upstream
+                };
+
                 record_api_proxy_call_success(context, proxy_key, &candidate, route, payload).await;
                 if matches!(load_balance.mode, ApiProxyLoadBalanceMode::Sequential) {
                     bind_sequential_session_proxy_account(
@@ -4660,7 +5018,7 @@ async fn send_codex_request_over_candidates(
                     )
                     .await;
                 }
-                return Ok((candidate, upstream));
+                return Ok((candidate, upstream, has_alternative_candidate));
             }
 
             let upstream_headers = upstream.headers().clone();
@@ -5029,6 +5387,50 @@ fn normalize_api_proxy_config_model_name(model: &str) -> Option<String> {
     Some(model_catalog::normalize_model_for_permissions(trimmed))
 }
 
+fn strip_dated_snapshot_suffix(model: &str) -> &str {
+    let bytes = model.as_bytes();
+    if bytes.len() > 11 {
+        let suffix = &bytes[bytes.len() - 11..];
+        let is_date = suffix[0] == b'-'
+            && suffix[5] == b'-'
+            && suffix[8] == b'-'
+            && suffix
+                .iter()
+                .enumerate()
+                .all(|(i, b)| matches!(i, 0 | 5 | 8) || b.is_ascii_digit());
+        if is_date {
+            return &model[..bytes.len() - 11];
+        }
+    }
+    model
+}
+
+pub(crate) fn is_upstream_response_model_degraded(
+    requested_model: &str,
+    response_model: &str,
+) -> bool {
+    let req_base = strip_dated_snapshot_suffix(requested_model.trim()).to_ascii_lowercase();
+    let resp_base = strip_dated_snapshot_suffix(response_model.trim()).to_ascii_lowercase();
+    let req = model_catalog::normalize_model_for_client(&req_base);
+    let resp = model_catalog::normalize_model_for_client(&resp_base);
+    if req.is_empty() || resp.is_empty() || req == "unknown" || resp == "unknown" {
+        return false;
+    }
+    if req.starts_with("gpt-image-") || req == resp {
+        return false;
+    }
+    if req == "gpt-6.2-sol" || req == "gpt-6.2-astra" {
+        return resp != req;
+    }
+    if req.contains("6.1-sol") || req.contains("gpt-6-astra") {
+        return !matches!(
+            resp.as_str(),
+            "gpt-6.1-sol" | "gpt-6-astra" | "gpt-6.2-sol" | "gpt-6.2-astra"
+        );
+    }
+    resp != req
+}
+
 fn api_proxy_disabled_model_set(settings: &AppSettings) -> HashSet<String> {
     settings
         .api_proxy_disabled_models
@@ -5371,7 +5773,31 @@ fn log_proxy_response_route(route: &str, status: StatusCode) {
     );
 }
 
+fn is_candidate_fingerprint_deprioritized(candidate: &ProxyCandidate) -> bool {
+    #[cfg(feature = "desktop")]
+    {
+        crate::fingerprint::is_account_temporarily_deprioritized(&candidate.account_key)
+    }
+    #[cfg(not(feature = "desktop"))]
+    {
+        let _ = candidate;
+        false
+    }
+}
+
 fn order_proxy_candidates_for_request(
+    candidates: Vec<ProxyCandidate>,
+    load_balance: ProxyLoadBalanceConfig,
+    current_sequential_account_key: Option<&str>,
+) -> Vec<ProxyCandidate> {
+    let mut ordered =
+        order_proxy_candidates_core(candidates, load_balance, current_sequential_account_key);
+    // 探针期或刚触发降级隔离的账号统一稳定降权至队尾，防止并发请求继续打入可疑账号
+    ordered.sort_by_key(is_candidate_fingerprint_deprioritized);
+    ordered
+}
+
+fn order_proxy_candidates_core(
     mut candidates: Vec<ProxyCandidate>,
     load_balance: ProxyLoadBalanceConfig,
     current_sequential_account_key: Option<&str>,
@@ -5424,7 +5850,9 @@ fn sequential_account_key_for_request(
 }
 
 fn can_reuse_sequential_candidate(candidate: &ProxyCandidate, limit_percent: f64) -> bool {
-    !candidate.auth_refresh_blocked && is_under_sequential_limit(candidate, limit_percent)
+    !candidate.auth_refresh_blocked
+        && !is_candidate_fingerprint_deprioritized(candidate)
+        && is_under_sequential_limit(candidate, limit_percent)
 }
 
 fn compare_sequential_switch_candidates(
@@ -5440,6 +5868,9 @@ fn compare_sequential_switch_candidates(
 
 fn sequential_switch_rank(candidate: &ProxyCandidate, current_key: &str, limit_percent: f64) -> u8 {
     if candidate.auth_refresh_blocked {
+        return 4;
+    }
+    if is_candidate_fingerprint_deprioritized(candidate) {
         return 3;
     }
     if candidate.account_key == current_key {
@@ -6309,15 +6740,143 @@ async fn record_api_proxy_call_success(
     }
 }
 
-async fn record_api_proxy_tokens_from_response(
+const SENTINEL_SYNC_VERIFY_TIMEOUT_SECS: u64 = 45;
+
+fn dispatch_proxy_sentinel(
     storage: &ProxyStorageContext,
     metadata: &ApiProxyUsageMetadata,
-    response: &Value,
-) {
-    let Some(usage) = api_proxy_usage_tokens_from_response(response) else {
-        return;
-    };
+    usage: &ApiProxyTokenUsageBreakdown,
+    response_model: Option<String>,
+    verification_tx: Option<tokio::sync::oneshot::Sender<bool>>,
+) -> bool {
+    #[cfg(feature = "desktop")]
+    {
+        if !metadata.is_chatgpt {
+            return false;
+        }
+        let (Some(tx), Some(account_key)) =
+            (storage.sentinel_tx.as_ref(), metadata.account_key.as_ref())
+        else {
+            return false;
+        };
+        tx.send(ProxySentinelDispatch {
+            observation: ProxySentinelObservation {
+                account_key: account_key.clone(),
+                model: metadata.model.clone(),
+                response_model,
+                reasoning_effort: metadata.reasoning_effort.clone(),
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                reasoning_tokens: usage.reasoning_tokens,
+            },
+            verification_tx,
+        })
+        .is_ok()
+    }
+    #[cfg(not(feature = "desktop"))]
+    {
+        let _ = (storage, metadata, usage, response_model, verification_tx);
+        false
+    }
+}
 
+fn notify_proxy_sentinel(
+    storage: &ProxyStorageContext,
+    metadata: &ApiProxyUsageMetadata,
+    usage: &ApiProxyTokenUsageBreakdown,
+    response_model: Option<String>,
+) {
+    let _ = dispatch_proxy_sentinel(storage, metadata, usage, response_model, None);
+}
+
+#[cfg(feature = "desktop")]
+async fn verify_proxy_sentinel_synchronously(
+    storage: &ProxyStorageContext,
+    metadata: &ApiProxyUsageMetadata,
+    usage: &ApiProxyTokenUsageBreakdown,
+    response_model: Option<String>,
+) -> bool {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if !dispatch_proxy_sentinel(storage, metadata, usage, response_model, Some(tx)) {
+        return false;
+    }
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(SENTINEL_SYNC_VERIFY_TIMEOUT_SECS),
+        rx,
+    )
+    .await
+    {
+        Ok(Ok(confirmed_degraded)) => confirmed_degraded,
+        Ok(Err(_)) | Err(_) => false,
+    }
+}
+
+#[cfg(not(feature = "desktop"))]
+async fn verify_proxy_sentinel_synchronously(
+    storage: &ProxyStorageContext,
+    metadata: &ApiProxyUsageMetadata,
+    usage: &ApiProxyTokenUsageBreakdown,
+    response_model: Option<String>,
+) -> bool {
+    let _ = (storage, metadata, usage, response_model);
+    false
+}
+
+fn trigger_mismatch_quarantine(
+    storage: &ProxyStorageContext,
+    candidate: &ProxyCandidate,
+    requested_model: &str,
+    response_model: &str,
+    reasoning_effort: Option<String>,
+    usage: Option<&ApiProxyTokenUsageBreakdown>,
+) {
+    #[cfg(feature = "desktop")]
+    {
+        if !matches!(candidate.source_kind, AccountSourceKind::Chatgpt) {
+            return;
+        }
+        crate::fingerprint::quarantine_account_on_mismatch(&candidate.account_key);
+        let Some(tx) = storage.sentinel_tx.as_ref() else {
+            return;
+        };
+        let _ = tx.send(ProxySentinelDispatch {
+            observation: ProxySentinelObservation {
+                account_key: candidate.account_key.clone(),
+                model: requested_model.to_string(),
+                response_model: Some(response_model.to_string()),
+                reasoning_effort,
+                input_tokens: usage.and_then(|u| u.input_tokens),
+                output_tokens: usage.and_then(|u| u.output_tokens),
+                reasoning_tokens: usage.and_then(|u| u.reasoning_tokens),
+            },
+            verification_tx: None,
+        });
+    }
+    #[cfg(not(feature = "desktop"))]
+    let _ = (
+        storage,
+        candidate,
+        requested_model,
+        response_model,
+        reasoning_effort,
+        usage,
+    );
+}
+
+fn response_model_from_value(response: &Value) -> Option<String> {
+    response
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(ToString::to_string)
+}
+
+async fn record_api_proxy_usage_tokens_only(
+    storage: &ProxyStorageContext,
+    metadata: &ApiProxyUsageMetadata,
+    usage: ApiProxyTokenUsageBreakdown,
+) {
     if let Err(error) = append_api_proxy_usage_event(
         storage,
         api_proxy_usage_token_event(metadata, usage, now_unix_seconds()),
@@ -6331,6 +6890,20 @@ async fn record_api_proxy_tokens_from_response(
             error
         );
     }
+}
+
+async fn record_api_proxy_tokens_from_response(
+    storage: &ProxyStorageContext,
+    metadata: &ApiProxyUsageMetadata,
+    response: &Value,
+) {
+    let Some(usage) = api_proxy_usage_tokens_from_response(response) else {
+        return;
+    };
+
+    let response_model = response_model_from_value(response);
+    notify_proxy_sentinel(storage, metadata, &usage, response_model);
+    record_api_proxy_usage_tokens_only(storage, metadata, usage).await;
 }
 
 async fn maybe_record_stream_usage_tokens(
@@ -6347,31 +6920,23 @@ async fn maybe_record_stream_usage_tokens(
     };
 
     *recorded_usage = true;
+    let response_model = api_proxy_response_model_from_sse_event(event);
+    notify_proxy_sentinel(storage, metadata, &usage, response_model);
     // 终止事件对客户端可见前先完成轻量 mpsc 入队，使随后导出的 FIFO barrier 不会越过本次 token。
-    if let Err(error) = append_api_proxy_usage_event(
-        storage,
-        api_proxy_usage_token_event(metadata, usage, now_unix_seconds()),
-    )
-    .await
-    {
-        log::warn!(
-            "记录 API 反代流式 token 统计失败 route={} model={}: {}",
-            metadata.route,
-            metadata.model,
-            error
-        );
-    }
+    record_api_proxy_usage_tokens_only(storage, metadata, usage).await;
 }
 
 fn api_proxy_usage_metadata(
     proxy_key: &ApiProxyKey,
-    _candidate: &ProxyCandidate,
+    candidate: &ProxyCandidate,
     route: &str,
     payload: &Value,
 ) -> ApiProxyUsageMetadata {
     ApiProxyUsageMetadata {
         key_id: Some(proxy_key.id.clone()),
         key_label: Some(proxy_key.label.clone()),
+        account_key: Some(candidate.account_key.clone()),
+        is_chatgpt: matches!(candidate.source_kind, AccountSourceKind::Chatgpt),
         model: api_proxy_usage_model_from_payload(payload),
         route: route.to_string(),
         reasoning_effort: api_proxy_reasoning_effort_from_payload(payload),
@@ -7467,6 +8032,18 @@ fn api_proxy_usage_tokens_from_sse_event(event: &SseEvent) -> Option<ApiProxyTok
         })
 }
 
+fn api_proxy_response_model_from_sse_event(event: &SseEvent) -> Option<String> {
+    let parsed = serde_json::from_str::<Value>(&event.data).ok()?;
+    parsed
+        .get("response")
+        .and_then(|r| r.get("model"))
+        .or_else(|| parsed.get("model"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(ToString::to_string)
+}
+
 fn api_proxy_usage_tokens_from_usage(usage: &Value) -> Option<ApiProxyTokenUsageBreakdown> {
     let input_tokens = token_count_field(usage, "input_tokens")
         .or_else(|| token_count_field(usage, "prompt_tokens"));
@@ -7484,11 +8061,21 @@ fn api_proxy_usage_tokens_from_usage(usage: &Value) -> Option<ApiProxyTokenUsage
         })
         .or_else(|| token_count_field(usage, "cached_input_tokens"));
 
+    let reasoning_tokens = usage
+        .get("output_tokens_details")
+        .and_then(|details| token_count_field(details, "reasoning_tokens"))
+        .or_else(|| {
+            usage
+                .get("completion_tokens_details")
+                .and_then(|details| token_count_field(details, "reasoning_tokens"))
+        });
+
     Some(ApiProxyTokenUsageBreakdown {
         total_tokens,
         input_tokens,
         output_tokens,
         cached_input_tokens,
+        reasoning_tokens,
     })
 }
 
@@ -8789,12 +9376,12 @@ fn build_chat_chunk(
 }
 
 impl SseDecoder {
-    fn push(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
+    pub(crate) fn push(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
         self.buffer.extend_from_slice(chunk);
         self.take_ready_events()
     }
 
-    fn finish(&mut self) -> Vec<SseEvent> {
+    pub(crate) fn finish(&mut self) -> Vec<SseEvent> {
         let mut events = self.take_ready_events();
         if !self.buffer.is_empty() {
             if let Some(event) = parse_sse_event(&self.buffer) {
@@ -9048,7 +9635,7 @@ fn enrich_codex_proxy_status(mut status: ApiProxyStatus) -> ApiProxyStatus {
     status
 }
 
-fn resolve_codex_upstream_base_url() -> String {
+pub(crate) fn resolve_codex_upstream_base_url() -> String {
     format!(
         "{}/backend-api/codex",
         resolve_chatgpt_base_origin().trim_end_matches('/')
@@ -9160,6 +9747,7 @@ mod tests {
     use super::get_api_proxy_usage_stats_with_storage;
     use super::host_matches_no_proxy;
     use super::is_responses_terminal_event;
+    use super::is_upstream_response_model_degraded;
     use super::list_api_proxy_keys_with_storage;
     use super::minimal_account_warmup_payload;
     use super::normalize_codex_compact_reasoning_effort;
@@ -9173,6 +9761,7 @@ mod tests {
     use super::parse_json_request;
     use super::parse_proxy_request_body_limit_mib;
     use super::payload_for_candidate;
+    use super::preflight_codex_responses_stream;
     use super::regenerate_api_proxy_key_with_runtime;
     use super::request_session_affinity_key;
     use super::resolve_proxy_request_body_limit_bytes_from_mib_value;
@@ -9191,11 +9780,13 @@ mod tests {
     use super::ApiProxyUsageEvent;
     use super::ChatStreamState;
     use super::CodexUpstreamEndpoint;
+    use super::CodexUpstreamResponse;
     use super::ImageMultipartRequest;
     use super::ProxyCandidate;
     use super::ProxyContext;
     use super::ProxyLoadBalanceConfig;
     use super::ProxyStorageContext;
+    use super::ResponsesStreamPreflight;
     use super::SseEvent;
     use super::API_PROXY_USAGE_DATABASE_FILE_NAME;
     use super::API_PROXY_USAGE_FILE_NAME;
@@ -9408,13 +9999,12 @@ mod tests {
         let data_dir = std::env::temp_dir().join(format!("codex-tools-{test_name}-{nonce}"));
         std::fs::create_dir_all(&data_dir).expect("temporary proxy storage should be writable");
         (
-            ProxyStorageContext {
-                data_dir: data_dir.clone(),
-                store_lock: Arc::new(tokio::sync::Mutex::new(())),
-                auth_refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
-                usage_writer: Arc::new(tokio::sync::Mutex::new(None)),
-                sync_active_auth_on_refresh: false,
-            },
+            super::new_proxy_storage_context(
+                data_dir.clone(),
+                Arc::new(tokio::sync::Mutex::new(())),
+                Arc::new(tokio::sync::Mutex::new(())),
+                false,
+            ),
             data_dir,
         )
     }
@@ -9618,13 +10208,12 @@ mod tests {
     #[test]
     fn builds_compact_upstream_urls_and_sse_bridge() {
         let context = ProxyContext {
-            storage: ProxyStorageContext {
-                data_dir: PathBuf::from("/tmp"),
-                store_lock: Arc::new(tokio::sync::Mutex::new(())),
-                auth_refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
-                usage_writer: Arc::new(tokio::sync::Mutex::new(None)),
-                sync_active_auth_on_refresh: false,
-            },
+            storage: super::new_proxy_storage_context(
+                PathBuf::from("/tmp"),
+                Arc::new(tokio::sync::Mutex::new(())),
+                Arc::new(tokio::sync::Mutex::new(())),
+                false,
+            ),
             api_keys: Arc::new(RwLock::new(Vec::new())),
             upstream_base_url: "https://chatgpt.com/backend-api/codex".to_string(),
             client: reqwest::Client::new(),
@@ -12606,5 +13195,103 @@ data: {"type":"response.completed","response":{"id":"resp_123","created_at":1,"m
             resolve_proxy_request_body_limit_bytes_from_mib_value(Some("1")),
             1024 * 1024
         );
+    }
+
+    #[test]
+    fn detects_degraded_upstream_response_models_across_families() {
+        // Equivalent / snapshot variants are NOT degraded
+        assert!(!is_upstream_response_model_degraded(
+            "gpt-6.2-sol",
+            "gpt-6.2-sol"
+        ));
+        assert!(!is_upstream_response_model_degraded(
+            "gpt-6.2-sol",
+            "gpt-6.2-sol-2026-03-01"
+        ));
+        assert!(!is_upstream_response_model_degraded(
+            "gpt-6.2-astra",
+            "gpt-6.2-astra"
+        ));
+        // Downgraded families/tiers MUST trigger mismatch
+        assert!(is_upstream_response_model_degraded("gpt-6.2-sol", "gpt-4o"));
+        assert!(is_upstream_response_model_degraded(
+            "gpt-6.2-astra",
+            "gpt-5-mini"
+        ));
+        assert!(is_upstream_response_model_degraded(
+            "gpt-6.2-astra",
+            "gpt-6.2-sol"
+        ));
+    }
+
+    #[tokio::test]
+    async fn sse_preflight_catches_downgraded_model_and_preserves_valid_chunks() {
+        let degraded_chunks = vec![Ok::<Bytes, String>(Bytes::from_static(
+            b"event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\",\"model\":\"gpt-4o\"}}\n\nevent: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n",
+        ))];
+        let degraded_upstream = CodexUpstreamResponse::Stream {
+            headers: HeaderMap::new(),
+            stream: Box::pin(futures_util::stream::iter(degraded_chunks)),
+        };
+        match preflight_codex_responses_stream(degraded_upstream, "gpt-6.2-sol").await {
+            ResponsesStreamPreflight::DegradedModel { response_model } => {
+                assert_eq!(response_model, "gpt-4o");
+            }
+            ResponsesStreamPreflight::Ready(_) => {
+                panic!("expected SSE preflight to catch gpt-4o downgrade for gpt-6.2-sol");
+            }
+        }
+
+        let raw_part_1 = b"event: response.created\ndata: {\"type\":\"response.created\",";
+        let raw_part_2 = b"\"response\":{\"id\":\"r2\",\"model\":\"gpt-6.2-sol\"}}\n\n";
+        let raw_part_3 = b"event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n";
+        let valid_chunks = vec![
+            Ok::<Bytes, String>(Bytes::from_static(raw_part_1)),
+            Ok::<Bytes, String>(Bytes::from_static(raw_part_2)),
+            Ok::<Bytes, String>(Bytes::from_static(raw_part_3)),
+        ];
+        let valid_upstream = CodexUpstreamResponse::Stream {
+            headers: HeaderMap::new(),
+            stream: Box::pin(futures_util::stream::iter(valid_chunks)),
+        };
+        match preflight_codex_responses_stream(valid_upstream, "gpt-6.2-sol").await {
+            ResponsesStreamPreflight::Ready(rebuilt) => {
+                let (_, full_bytes) = rebuilt.into_bytes().await.expect("rebuilt stream readable");
+                let mut expected = Vec::new();
+                expected.extend_from_slice(raw_part_1);
+                expected.extend_from_slice(raw_part_2);
+                expected.extend_from_slice(raw_part_3);
+                assert_eq!(full_bytes.as_ref(), expected.as_slice());
+            }
+            ResponsesStreamPreflight::DegradedModel { response_model } => {
+                panic!("unexpected downgrade detection for {response_model}");
+            }
+        }
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn proxy_candidate_ordering_moves_quarantined_account_to_end() {
+        let key_a = "test-quarantine-order-a@example.com|chatgpt";
+        let key_b = "test-quarantine-order-b@example.com|chatgpt";
+        crate::fingerprint::clear_account_runtime_quarantine(key_a);
+        crate::fingerprint::quarantine_account_on_mismatch(key_a);
+
+        let ordered = order_proxy_candidates_for_request(
+            vec![
+                proxy_candidate("a", key_a, Some(10.0), Some(10.0), false),
+                proxy_candidate("b", key_b, Some(10.0), Some(10.0), false),
+            ],
+            ProxyLoadBalanceConfig {
+                mode: ApiProxyLoadBalanceMode::Sequential,
+                sequential_five_hour_limit_percent: 80.0,
+            },
+            Some(key_a),
+        );
+        crate::fingerprint::clear_account_runtime_quarantine(key_a);
+
+        assert_eq!(ordered.len(), 2);
+        assert_eq!(ordered[0].account_key, key_b);
+        assert_eq!(ordered[1].account_key, key_a);
     }
 }

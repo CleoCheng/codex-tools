@@ -196,6 +196,19 @@ check(
   "Settings no longer expose layout selection",
   !classicSettings.includes("layoutPicker"),
 );
+const proxyLockedSettings = render(
+  <SettingsPanel
+    {...settingsProps}
+    settings={{ ...settingsProps.settings, autoSwitchOnExhaustion: true, autoContinueAfterSwitch: true }}
+    codexProxyBound={true}
+  />,
+);
+check(
+  "Settings lock auto-switch off and hide nested auto-continue options while proxy-bound",
+  proxyLockedSettings.includes("settingProxyBadge") &&
+    proxyLockedSettings.includes("settingProxyLockedNotice") &&
+    !proxyLockedSettings.includes("切换后继续最近的 Codex 任务"),
+);
 check(
   "Analytics shows hourly overview and organized detail tabs",
   render(<AnalyticsPanel {...analyticsProps} />).includes(

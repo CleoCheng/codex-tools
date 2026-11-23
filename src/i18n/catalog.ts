@@ -113,6 +113,12 @@ export type MessageCatalog = {
     tokensEvents: string;
     tokensFailedSources: string;
     exportAll: string;
+    autoSwitchLabel: string;
+    autoSwitchOn: string;
+    autoSwitchOff: string;
+    autoSwitchProxyBadge: string;
+    autoSwitchHint: string;
+    autoSwitchProxyHint: string;
   };
   addAccount: {
     smartSwitch: string;
@@ -574,6 +580,9 @@ export type MessageCatalog = {
     };
     autoSwitchOnExhaustion: {
       label: string;
+      description: string;
+      proxyLockedNotice: string;
+      proxyBadge: string;
       checkedText: string;
       uncheckedText: string;
     };

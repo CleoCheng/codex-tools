@@ -38,6 +38,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoAccountWarmupAccountIds: [],
   codexAnalyticsWeeklyBudgetUsd: null,
   remoteServers: [],
+  accountFingerprints: {},
   locale: "zh-CN",
   skippedUpdateVersion: null,
 };

@@ -1,4 +1,7 @@
-import type { AccountSummary } from "../../types/app";
+import type {
+  AccountFingerprintSummary,
+  AccountSummary,
+} from "../../types/app";
 
 export type AccountGroup = {
   id: string;
@@ -22,7 +25,13 @@ export type AccountStatus =
   | "low"
   | "exhausted"
   | "issue";
-export type StatusFilter = AccountStatus | "all";
+export type StatusFilter =
+  | AccountStatus
+  | "all"
+  | "normal"
+  | "degraded"
+  | "enabled"
+  | "disabled";
 
 export type UiCopy = {
   searchPlaceholder: string;
@@ -67,9 +76,37 @@ export type UiCopy = {
   noMatchesTitle: string;
   noMatchesDescription: string;
   emptyValue: string;
+  filterEnabled: string;
+  filterDisabled: string;
+  filterNormal: string;
+  filterDegraded: string;
+  stateEnabled: string;
+  stateDisabled: string;
+  fingerprintNormal: string;
+  fingerprintDegraded: string;
+  fingerprintUntested: string;
+  fingerprintSkipped: string;
+  fingerprintProbing: string;
+  fingerprintError: string;
+  fingerprintAction: string;
+  fingerprintSectionTitle: string;
+  fingerprintTargetModel: string;
+  fingerprintDetectedModel: string;
+  fingerprintConfidence: string;
+  fingerprintTtft: string;
+  fingerprintCheckedAt: string;
+  fingerprintCheckedPrefix: string;
+  fingerprintEmpty: string;
+  fingerprintNextRecovery: string;
+  fingerprintAutoDisabledHint: string;
+  enableToggleLabel: string;
 };
 
 export type AccountsGridProps = {
+  accountFingerprints?: Record<string, AccountFingerprintSummary>;
+  probingAccountKeys?: string[];
+  probingAllFingerprints?: boolean;
+  onProbeFingerprints?: (accounts?: AccountSummary[]) => Promise<void>;
   resettingAccountId?: string | null;
   onUseResetCredit?: (account: AccountSummary, creditId: string) => Promise<boolean>;
   accountOrder?: string[];

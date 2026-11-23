@@ -15,6 +15,7 @@ export type SettingsPanelProps = {
   onCheckUpdate: () => void;
   onOpenExternalUrl: (url: string) => void;
   settings: AppSettings;
+  codexProxyBound?: boolean;
   accounts: AccountSummary[];
   installedEditorApps: InstalledEditorApp[];
   hasOpencodeDesktopApp: boolean;

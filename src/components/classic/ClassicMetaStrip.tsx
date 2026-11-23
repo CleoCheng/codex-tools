@@ -4,12 +4,17 @@ import {
   accountHasBlockingIssue,
   accountHasExhaustedWindow,
 } from "../accounts/accountModel";
+import { Switch } from "../ui/Switch";
 
 type MetaStripProps = {
   accounts: AccountSummary[];
   exportingAccounts: boolean;
   onExportAccounts: () => void;
   autoSwitchStatus?: AutoSwitchStatus | null;
+  autoSwitchOnExhaustion?: boolean;
+  codexProxyBound?: boolean;
+  savingSettings?: boolean;
+  onToggleAutoSwitch?: (checked: boolean) => void;
 };
 
 type MetricTone = "blue" | "green" | "amber" | "red";
@@ -79,6 +84,10 @@ export function ClassicMetaStrip({
   exportingAccounts,
   onExportAccounts,
   autoSwitchStatus,
+  autoSwitchOnExhaustion = false,
+  codexProxyBound = false,
+  savingSettings = false,
+  onToggleAutoSwitch,
 }: MetaStripProps) {
   const { copy, locale } = useI18n();
   const isChinese = locale === "zh-CN";
@@ -150,6 +159,92 @@ export function ClassicMetaStrip({
       >
         {copy.metaStrip.exportAll}
       </button>
+      {onToggleAutoSwitch ? (
+        <div
+          className={`autoSwitchQuickToggle ${
+            codexProxyBound
+              ? "isProxyLocked"
+              : autoSwitchOnExhaustion
+                ? "isEnabled"
+                : "isDisabled"
+          }`}
+        >
+          <div className="autoSwitchQuickCopy">
+            <span className="autoSwitchQuickHeader">
+              <svg
+                className="autoSwitchQuickIcon"
+                viewBox="0 0 24 24"
+                fill="none"
+                aria-hidden="true"
+              >
+                {codexProxyBound ? (
+                  <>
+                    <path
+                      d="M7 11V8a5 5 0 0 1 10 0v3"
+                      stroke="currentColor"
+                      strokeWidth="1.9"
+                      strokeLinecap="round"
+                    />
+                    <rect
+                      x="5"
+                      y="11"
+                      width="14"
+                      height="9"
+                      rx="2.5"
+                      stroke="currentColor"
+                      strokeWidth="1.9"
+                    />
+                  </>
+                ) : (
+                  <>
+                    <path
+                      d="M16 4l4 4-4 4M20 8H7a3 3 0 0 0-3 3v1"
+                      stroke="currentColor"
+                      strokeWidth="1.9"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M8 20l-4-4 4-4M4 16h13a3 3 0 0 0 3-3v-1"
+                      stroke="currentColor"
+                      strokeWidth="1.9"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </>
+                )}
+              </svg>
+              <strong className="autoSwitchQuickTitle">
+                {copy.metaStrip.autoSwitchLabel}
+              </strong>
+              <span className="autoSwitchQuickState">
+                {codexProxyBound
+                  ? copy.metaStrip.autoSwitchProxyBadge
+                  : autoSwitchOnExhaustion
+                    ? copy.metaStrip.autoSwitchOn
+                    : copy.metaStrip.autoSwitchOff}
+              </span>
+            </span>
+            <span className="autoSwitchQuickHint">
+              {codexProxyBound
+                ? copy.metaStrip.autoSwitchProxyHint
+                : copy.metaStrip.autoSwitchHint}
+            </span>
+          </div>
+          <div className="autoSwitchQuickControl">
+            <Switch
+              checked={codexProxyBound ? false : Boolean(autoSwitchOnExhaustion)}
+              onChange={(checked) => {
+                if (!codexProxyBound) {
+                  onToggleAutoSwitch(checked);
+                }
+              }}
+              label={copy.metaStrip.autoSwitchLabel}
+              disabled={Boolean(savingSettings || codexProxyBound)}
+            />
+          </div>
+        </div>
+      ) : null}
       {autoSwitchStatus && autoSwitchStatus.stage !== "idle" ? (
         <span
           className={`autoSwitchBadge stage-${autoSwitchStatus.stage}`}

@@ -1,12 +1,29 @@
 import { useI18n } from "../../i18n/I18nProvider";
+import { getUiCopy } from "../accounts/accountCopy";
 
 type AddAccountSectionProps = {
   onOpenAddDialog: () => void;
   onSmartSwitch: () => void;
   onLaunchCodexApp: () => void;
+  onProbeAllFingerprints?: () => void;
+  probingAllFingerprints?: boolean;
   smartSwitching: boolean;
   launchingCodexApp: boolean;
 };
+
+function ShieldIcon() {
+  return (
+    <svg
+      className="buttonIcon"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M12 3 4.5 6v6c0 4.5 3.2 8.4 7.5 9.5 4.3-1.1 7.5-5 7.5-9.5V6L12 3z" />
+      <path d="m9.5 12 1.8 1.8 3.5-3.8" />
+    </svg>
+  );
+}
 
 function PlayIcon() {
   return (
@@ -59,13 +76,32 @@ export function ClassicAccountActions({
   onOpenAddDialog,
   onSmartSwitch,
   onLaunchCodexApp,
+  onProbeAllFingerprints,
+  probingAllFingerprints = false,
   smartSwitching,
   launchingCodexApp,
 }: AddAccountSectionProps) {
-  const { copy } = useI18n();
+  const { copy, locale } = useI18n();
+  const text = getUiCopy(locale);
 
   return (
     <section className="importBar">
+      {onProbeAllFingerprints && (
+        <button
+          className="ghost probeFingerprintsButton"
+          onClick={onProbeAllFingerprints}
+          disabled={probingAllFingerprints || smartSwitching}
+          title={text.fingerprintAction}
+          aria-label={text.fingerprintAction}
+        >
+          <ShieldIcon />
+          {probingAllFingerprints
+            ? text.fingerprintProbing
+            : locale === "zh-CN"
+              ? "检测降智"
+              : "Probe models"}
+        </button>
+      )}
       <button
         className="ghost smartSwitchButton importSmartSwitch"
         onClick={onSmartSwitch}

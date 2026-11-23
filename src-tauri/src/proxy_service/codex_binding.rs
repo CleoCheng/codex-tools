@@ -18,15 +18,20 @@ pub(crate) async fn bind_codex_to_api_proxy_internal(
     let storage = app_proxy_storage_context(app, state)?;
     {
         let _guard = storage.store_lock.lock().await;
-        let settings =
-            load_store_from_path(&account_store_path_from_data_dir(&storage.data_dir))?.settings;
+        let store_path = account_store_path_from_data_dir(&storage.data_dir);
+        let mut store = load_store_from_path(&store_path)?;
         let key = load_api_proxy_key_store_from_path(&api_proxy_keys_path(&storage)?)?
             .keys
             .into_iter()
             .find(|key| key.enabled && key.key == api_key)
             .ok_or_else(|| "当前反代 API Key 已失效，请重新生成后绑定。".to_string())?;
-        let catalog = codex_catalog::catalog_for_key(&settings, &key);
+        let catalog = codex_catalog::catalog_for_key(&store.settings, &key);
         profile_files::bind_codex_to_api_proxy(base_url, api_key, &catalog)?;
+        if store.settings.auto_switch_on_exhaustion {
+            // Auto-switching overwrites auth.json/config.toml and breaks the proxy binding.
+            store.settings.auto_switch_on_exhaustion = false;
+            crate::store::save_store_to_path(&store_path, &store)?;
+        }
     }
     get_api_proxy_status_internal(app, state).await
 }

@@ -58,7 +58,13 @@
     "tokensSources": "ログファイル",
     "tokensEvents": "トークンイベント",
     "tokensFailedSources": "読み取り失敗",
-    "exportAll": "すべてエクスポート"
+    "exportAll": "すべてエクスポート",
+    "autoSwitchLabel": "自動切替",
+    "autoSwitchOn": "オン",
+    "autoSwitchOff": "オフ",
+    "autoSwitchProxyBadge": "プロキシ管理",
+    "autoSwitchHint": "クォータ枯渇時に自動で切替・~/.codex を更新",
+    "autoSwitchProxyHint": "プロキシ接続中は自動切替をロック（プロキシ側で自動フェイルオーバー）"
   },
   "addAccount": {
     "smartSwitch": "スマート切替",
@@ -546,6 +552,9 @@
     },
     "autoSwitchOnExhaustion": {
       "label": "クォータ枯渇時にアカウントを自動切り替え",
+      "description": "5時間または7日間のクォータが枯渇すると自動で別アカウントへ切り替え、~/.codex を書き換えます。ローカル API プロキシ接続中は競合を防ぐため自動で無効化されます。",
+      "proxyLockedNotice": "現在 Codex はローカル API プロキシにバインドされているため、自動切替はロックされています。プロキシ側で上流アカウントを切り替えるため会話は中断されません。再有効化するには「プロキシ」タブで元の設定に戻してください。",
+      "proxyBadge": "プロキシ管理",
       "checkedText": "自動",
       "uncheckedText": "手動"
     },

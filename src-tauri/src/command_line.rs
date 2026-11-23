@@ -1225,12 +1225,16 @@ fn account_partial_match(account: &StoredAccount, raw_ref: &str) -> bool {
 }
 
 fn pick_best_account_index(accounts: &[StoredAccount]) -> Result<usize, String> {
+    if accounts.is_empty() {
+        return Err("账号列表为空".to_string());
+    }
     accounts
         .iter()
         .enumerate()
+        .filter(|(_, account)| account.api_proxy_enabled)
         .min_by_key(|(_, account)| account_rank(account))
         .map(|(index, _)| index)
-        .ok_or_else(|| "账号列表为空".to_string())
+        .ok_or_else(|| "没有已启用的可用账号".to_string())
 }
 
 fn account_rank(account: &StoredAccount) -> (u8, u8, i64, i64, i64) {
@@ -2006,5 +2010,52 @@ mod tests {
             b"synthetic unchanged auth"
         );
         cleanup_store(&path);
+    }
+
+    #[test]
+    fn pick_best_skips_disabled_accounts() {
+        use crate::models::{UsageSnapshot, UsageWindow};
+
+        let mut disabled = sample_account("disabled", "disabled", "acct-disabled");
+        disabled.api_proxy_enabled = false;
+        disabled.usage = Some(UsageSnapshot {
+            fetched_at: 0,
+            plan_type: Some("plus".to_string()),
+            five_hour: Some(UsageWindow {
+                used_percent: 0.0,
+                window_seconds: 18000,
+                reset_at: None,
+            }),
+            one_week: Some(UsageWindow {
+                used_percent: 0.0,
+                window_seconds: 604800,
+                reset_at: None,
+            }),
+            credits: None,
+            reset_credits: None,
+        });
+        let mut enabled = sample_account("enabled", "enabled", "acct-enabled");
+        enabled.usage = Some(UsageSnapshot {
+            fetched_at: 0,
+            plan_type: Some("plus".to_string()),
+            five_hour: Some(UsageWindow {
+                used_percent: 40.0,
+                window_seconds: 18000,
+                reset_at: None,
+            }),
+            one_week: Some(UsageWindow {
+                used_percent: 30.0,
+                window_seconds: 604800,
+                reset_at: None,
+            }),
+            credits: None,
+            reset_credits: None,
+        });
+
+        assert_eq!(
+            super::pick_best_account_index(&[disabled.clone(), enabled]).unwrap(),
+            1
+        );
+        assert!(super::pick_best_account_index(&[disabled]).is_err());
     }
 }

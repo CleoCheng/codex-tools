@@ -304,6 +304,9 @@ struct SocketStream {
 enum Inner {
     #[cfg(windows)]
     Winsock(WinsockSocket),
+    #[cfg(not(windows))]
+    #[allow(dead_code)]
+    Unsupported,
 }
 
 impl SocketStream {
@@ -325,6 +328,11 @@ impl SocketStream {
         match &self.inner {
             #[cfg(windows)]
             Inner::Winsock(socket) => socket.set_read_timeout(timeout),
+            #[cfg(not(windows))]
+            Inner::Unsupported => {
+                let _ = timeout;
+                Err(unsupported_socket_error())
+            }
         }
     }
 
@@ -356,11 +364,24 @@ impl SocketStream {
     }
 }
 
+#[cfg(not(windows))]
+fn unsupported_socket_error() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "控制通道仅在 Windows 上实现",
+    )
+}
+
 impl Read for SocketStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match &mut self.inner {
             #[cfg(windows)]
             Inner::Winsock(socket) => socket.read(buf),
+            #[cfg(not(windows))]
+            Inner::Unsupported => {
+                let _ = buf;
+                Err(unsupported_socket_error())
+            }
         }
     }
 }
@@ -370,6 +391,11 @@ impl Write for SocketStream {
         match &mut self.inner {
             #[cfg(windows)]
             Inner::Winsock(socket) => socket.write(buf),
+            #[cfg(not(windows))]
+            Inner::Unsupported => {
+                let _ = buf;
+                Err(unsupported_socket_error())
+            }
         }
     }
 

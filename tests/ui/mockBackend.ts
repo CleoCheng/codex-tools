@@ -209,6 +209,59 @@ export function installPreviewBackend() {
       }
       if (command === "warmup_account")
         return { id: payload?.id, status: "alreadyActive", accounts };
+      if (command === "probe_account_fingerprints") {
+        const fingerprints = { ...(settings.accountFingerprints ?? {}) };
+        for (const account of accounts) {
+          if (account.sourceKind !== "chatgpt") continue;
+          fingerprints[account.accountKey] = {
+            degraded: false,
+            targetModel: "6.2sol/6.2astra",
+            detectedModel: "gpt-6.2-sol / gpt-6.2-astra",
+            detectedModelId: "gpt-6.2-sol",
+            confidence: 0.999,
+            score: 3.56,
+            runnerUpModel: "gpt-6-astra/6.1-sol",
+            runnerUpScore: 1.97,
+            validSamples: 6,
+            totalSamples: 6,
+            ttftMs: 4200,
+            checkedAt: Math.floor(Date.now() / 1000),
+            error: null,
+            sol: {
+              targetModel: "gpt-6.2-sol",
+              effort: "xhigh",
+              degraded: false,
+              detectedModel: "gpt-6.2-sol",
+              detectedModelId: "gpt-6.2-sol",
+              confidence: 0.999,
+              score: 3.56,
+              runnerUpModel: "gpt-6-astra/6.1-sol",
+              runnerUpScore: 1.97,
+              validSamples: 3,
+              totalSamples: 3,
+              ttftMs: 4100,
+              error: null,
+            },
+            astra: {
+              targetModel: "gpt-6.2-astra",
+              effort: "xhigh",
+              degraded: false,
+              detectedModel: "gpt-6.2-astra",
+              detectedModelId: "gpt-6.2-astra",
+              confidence: 0.999,
+              score: 3.61,
+              runnerUpModel: "gpt-6.2-sol",
+              runnerUpScore: 1.88,
+              validSamples: 3,
+              totalSamples: 3,
+              ttftMs: 4300,
+              error: null,
+            },
+          };
+        }
+        settings = { ...settings, accountFingerprints: fingerprints };
+        return { accounts, accountFingerprints: fingerprints };
+      }
       if (command === "delete_account") {
         accounts = accounts.filter((a) => a.id !== payload?.id);
         return null;

@@ -5,7 +5,12 @@ import type { AccountRow } from "../accounts/types";
 import { formatPlan, planTone } from "../../utils/usage";
 import { displayAccountAddress } from "../accounts/accountPresentation";
 import { accountIssueReason, accountStatus } from "../accounts/accountModel";
-import { statusLabel } from "../accounts/accountCopy";
+import {
+  formatFingerprintTooltip,
+  resolveFingerprintBadgeView,
+  statusLabel,
+} from "../accounts/accountCopy";
+import { FingerprintBadge } from "../accounts/FingerprintBadge";
 import { UsageFreshnessBadge } from "../accounts/UsageFreshnessBadge";
 import { AccountActionMenu } from "../accounts/AccountActionMenu";
 import { AccountRowMetrics } from "./AccountRowMetrics";
@@ -41,6 +46,12 @@ export function ClassicAccountRow({
   const switchDisabled = authBusy || account.isCurrent;
   const accountAddress = displayAccountAddress(account, text.emptyValue);
   const issueReason = accountIssueReason(account, text.issueFallbackReason);
+  const fingerprint = actions.accountFingerprints?.[account.accountKey];
+  const isProbingFingerprint = Boolean(
+    actions.probingAccountKeys?.includes(account.accountKey),
+  );
+  const fpBadgeView = resolveFingerprintBadgeView(fingerprint, text);
+  const fpTooltip = formatFingerprintTooltip(fingerprint, text);
   return (
     <AccountListRow current={account.isCurrent} selected={isSelected} status={status} onInspect={() => selectAccount(account.id)}>
       <div className="accountIdentityCell">
@@ -86,6 +97,29 @@ export function ClassicAccountRow({
             >
               {account.label || accountAddress}
             </button>
+            <span
+              className={`accountEnableBadge ${
+                account.apiProxyEnabled ? "isEnabled" : "isDisabled"
+              }`}
+              title={
+                account.apiProxyEnabled ? text.stateEnabled : text.stateDisabled
+              }
+            >
+              {account.apiProxyEnabled ? text.stateEnabled : text.stateDisabled}
+            </span>
+            {account.sourceKind !== "relay" && (
+              <FingerprintBadge
+                view={fpBadgeView}
+                probing={isProbingFingerprint}
+                probingLabel={text.fingerprintProbing}
+                title={fpTooltip}
+                disabled={Boolean(actions.probingAllFingerprints) || authBusy}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void actions.onProbeFingerprints?.([account]);
+                }}
+              />
+            )}
           </span>
           <span className="accountStateLine">
             <AccountRowMetrics account={account} usage={workspace.tokenUsageByAccount.get(account.accountId)} locale={locale} text={text} />
@@ -122,7 +156,7 @@ export function ClassicAccountRow({
         locale={locale}
       />
       <div className="accountProxyControl" onClick={event => event.stopPropagation()}>
-        <span>API</span>
+        <span>{text.enableToggleLabel}</span>
         <Switch checked={account.apiProxyEnabled} disabled={authBusy}
           label={copy.accountCard.apiProxyToggle}
           onChange={checked => { void onToggleApiProxy(account, checked); }} />

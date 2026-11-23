@@ -25,6 +25,7 @@ mod cloudflared_service;
 mod command_line;
 mod desktop_project_state;
 mod editor_apps;
+mod fingerprint;
 mod i18n;
 mod models;
 mod opencode;
@@ -771,6 +772,24 @@ async fn update_account_api_proxy_enabled(
     }
 
     Ok(resolved_enabled)
+}
+
+#[tauri::command]
+async fn probe_account_fingerprints(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_ids: Option<Vec<String>>,
+    model: Option<String>,
+) -> Result<models::ProbeAccountFingerprintsResult, String> {
+    let result = fingerprint::probe_account_fingerprints_internal(
+        &app,
+        state.inner(),
+        account_ids,
+        model,
+    )
+    .await?;
+    let _ = tray::refresh_usage_surfaces_snapshot(&app);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2316,7 +2335,7 @@ pub(crate) async fn switch_account_internal(
                 cli::find_configured_codex_app_path(store.settings.codex_launch_path.as_deref())
                     .or_else(cli::find_codex_app_path);
             match launch_target {
-                Some(path) => !is_macos_app_running_with_home(&path, app_paths::codex_dir()?),
+                Some(path) => !is_macos_app_running_with_home(&path, &app_paths::codex_dir()?),
                 None => true,
             }
         } else {
@@ -3095,6 +3114,7 @@ fn start_periodic_usage_refresh_loop(app: AppHandle) {
             .await
             {
                 Ok(mut summaries) => {
+                    fingerprint::spawn_recovery_probes_if_due(app.clone());
                     match account_service::run_auto_account_warmups_internal(&app, state.inner())
                         .await
                     {
@@ -3410,6 +3430,7 @@ pub fn run() {
             delete_account,
             update_account_label,
             update_account_api_proxy_enabled,
+            probe_account_fingerprints,
             refresh_all_usage,
             get_auto_switch_status,
             warmup_account,

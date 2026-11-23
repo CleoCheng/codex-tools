@@ -252,6 +252,87 @@ pub(crate) fn codex_proxy_binding_state(
     })
 }
 
+pub(crate) fn is_codex_using_api_proxy() -> bool {
+    let Ok(config_path) = current_codex_config_path() else {
+        return false;
+    };
+    let Ok(metadata_path) = codex_proxy_backup_metadata_path() else {
+        return false;
+    };
+    let Ok(auth_path) = app_paths::codex_auth_path() else {
+        return false;
+    };
+    is_codex_using_api_proxy_in_paths(&config_path, &metadata_path, &auth_path)
+}
+
+pub(crate) fn is_codex_using_api_proxy_in_paths(
+    config_path: &Path,
+    metadata_path: &Path,
+    auth_path: &Path,
+) -> bool {
+    let Some(current_base_url) = read_optional_text(config_path)
+        .ok()
+        .flatten()
+        .as_deref()
+        .and_then(codex_config_openai_base_url)
+    else {
+        return false;
+    };
+
+    if metadata_path.is_file() {
+        if let Ok(metadata_text) = fs::read_to_string(metadata_path) {
+            if let Ok(metadata) =
+                serde_json::from_str::<CodexProxyBindingBackupMetadata>(&metadata_text)
+            {
+                if normalize_codex_proxy_base_url(&metadata.bound_base_url).as_deref()
+                    == Some(current_base_url.as_str())
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
+    is_loopback_proxy_base_url(&current_base_url) && auth_file_uses_api_key(auth_path)
+}
+
+fn is_loopback_proxy_base_url(value: &str) -> bool {
+    let trimmed = value.trim();
+    let without_scheme = trimmed
+        .strip_prefix("http://")
+        .or_else(|| trimmed.strip_prefix("https://"))
+        .unwrap_or("");
+    let authority = without_scheme.split('/').next().unwrap_or("");
+    if authority.is_empty() {
+        return false;
+    }
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+}
+
+fn auth_file_uses_api_key(auth_path: &Path) -> bool {
+    let Ok(Some(raw)) = read_optional_text(auth_path) else {
+        return false;
+    };
+    let Ok(parsed) = serde_json::from_str::<Value>(&raw) else {
+        return false;
+    };
+    let Some(root) = parsed.as_object() else {
+        return false;
+    };
+    root.get("auth_mode")
+        .and_then(Value::as_str)
+        .is_some_and(|mode| mode.eq_ignore_ascii_case("apikey"))
+        || root
+            .get("OPENAI_API_KEY")
+            .and_then(Value::as_str)
+            .is_some_and(|key| !key.trim().is_empty())
+}
+
 pub(crate) fn bind_codex_to_api_proxy(
     base_url: &str,
     api_key: &str,
@@ -727,6 +808,7 @@ mod tests {
     use super::build_codex_proxy_config;
     use super::build_relay_profile_config;
     use super::ensure_codex_proxy_backup_in_dir;
+    use super::is_codex_using_api_proxy_in_paths;
     use super::merge_shared_config;
     use super::normalize_codex_proxy_base_url;
     use super::CODEX_PROXY_BACKUP_METADATA_FILE_NAME;
@@ -999,6 +1081,73 @@ shared_setting = "keep-me"
                 .expect("read backup config"),
             "model = \"gpt-5.5\"\n"
         );
+
+        let _ = fs::remove_dir_all(&sandbox);
+    }
+
+    #[test]
+    fn detects_codex_using_api_proxy_with_custom_catalog_or_loopback_auth() {
+        let sandbox = unique_test_dir("proxy-detect");
+        fs::create_dir_all(&sandbox).expect("create sandbox");
+        let config_path = sandbox.join("config.toml");
+        let metadata_path = sandbox.join("metadata.json");
+        let auth_path = sandbox.join("auth.json");
+
+        // 1. Metadata match works even when model_catalog_json points to a custom catalog path
+        fs::write(
+            &config_path,
+            "model = \"gpt-6.2-astra\"\nopenai_base_url = \"http://127.0.0.1:18787/v1\"\nmodel_catalog_json = 'C:\\Users\\demo\\.codex\\codex-tools-models-6.2.json'\n",
+        )
+        .expect("write custom proxy config");
+        fs::write(
+            &metadata_path,
+            "{\"config_existed\":true,\"auth_existed\":true,\"bound_base_url\":\"http://127.0.0.1:18787/v1\",\"bound_at\":1}\n",
+        )
+        .expect("write metadata");
+        assert!(is_codex_using_api_proxy_in_paths(
+            &config_path,
+            &metadata_path,
+            &auth_path
+        ));
+
+        // 2. Without metadata, loopback openai_base_url + apikey auth.json is still detected
+        fs::remove_file(&metadata_path).expect("remove metadata");
+        fs::write(
+            &auth_path,
+            "{\"auth_mode\":\"apikey\",\"OPENAI_API_KEY\":\"sk-proxy-test\"}\n",
+        )
+        .expect("write apikey auth");
+        assert!(is_codex_using_api_proxy_in_paths(
+            &config_path,
+            &metadata_path,
+            &auth_path
+        ));
+
+        // 3. Normal ChatGPT account config without openai_base_url is not treated as proxy mode
+        fs::write(&config_path, "model = \"gpt-5.4\"\n").expect("write direct config");
+        fs::write(&auth_path, "{\"auth_mode\":\"chatgpt\"}\n").expect("write chatgpt auth");
+        assert!(!is_codex_using_api_proxy_in_paths(
+            &config_path,
+            &metadata_path,
+            &auth_path
+        ));
+
+        // 4. External relay URL is not misclassified as local API proxy
+        fs::write(
+            &config_path,
+            "openai_base_url = \"https://relay.example.com/v1\"\n",
+        )
+        .expect("write external relay config");
+        fs::write(
+            &auth_path,
+            "{\"auth_mode\":\"apikey\",\"OPENAI_API_KEY\":\"sk-relay\"}\n",
+        )
+        .expect("write relay auth");
+        assert!(!is_codex_using_api_proxy_in_paths(
+            &config_path,
+            &metadata_path,
+            &auth_path
+        ));
 
         let _ = fs::remove_dir_all(&sandbox);
     }

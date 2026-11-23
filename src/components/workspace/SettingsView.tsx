@@ -30,6 +30,7 @@ export function SettingsView({
       onCheckUpdate={() => void c.checkForAppUpdate(false)}
       onOpenExternalUrl={(url) => void c.openExternalUrl(url)}
       settings={c.settings}
+      codexProxyBound={c.codexProxyMode}
       accounts={c.accounts}
       installedEditorApps={c.installedEditorApps}
       hasOpencodeDesktopApp={c.hasOpencodeDesktopApp}

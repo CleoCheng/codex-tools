@@ -1378,6 +1378,30 @@
   color: var(--danger);
 }
 
+.settingProxyBadge {
+  display: inline-flex;
+  align-items: center;
+  margin-inline-start: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--warning) 42%, var(--line) 58%);
+  background: color-mix(in srgb, var(--warning) 14%, var(--bg-1) 86%);
+  color: color-mix(in srgb, var(--warning) 88%, var(--ink) 12%);
+  font: 600 11px/1.5 var(--font-ui);
+  vertical-align: middle;
+}
+
+.settingProxyLockedNotice {
+  display: block;
+  margin-top: 7px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--warning) 36%, var(--line) 64%);
+  background: color-mix(in srgb, var(--warning) 10%, var(--bg-1) 90%);
+  color: color-mix(in srgb, var(--warning) 88%, var(--ink) 12%);
+  font: 500 12px/1.45 var(--font-ui);
+}
+
 .warmupSettingsRow {
   align-items: flex-start;
 }

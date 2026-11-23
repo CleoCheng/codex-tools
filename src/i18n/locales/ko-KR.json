@@ -58,7 +58,13 @@
     "tokensSources": "로그 파일",
     "tokensEvents": "토큰 이벤트",
     "tokensFailedSources": "읽기 실패",
-    "exportAll": "전체 내보내기"
+    "exportAll": "전체 내보내기",
+    "autoSwitchLabel": "자동 전환",
+    "autoSwitchOn": "켜짐",
+    "autoSwitchOff": "꺼짐",
+    "autoSwitchProxyBadge": "프록시 제어",
+    "autoSwitchHint": "할당량 소진 시 자동 전환 및 ~/.codex 갱신",
+    "autoSwitchProxyHint": "Codex가 프록시에 바인딩되어 꺼짐 고정됨(프록시 풀 자동 전환)"
   },
   "addAccount": {
     "smartSwitch": "스마트 전환",
@@ -546,6 +552,9 @@
     },
     "autoSwitchOnExhaustion": {
       "label": "할당량 소진 시 계정 자동 전환",
+      "description": "5시간 또는 7일 할당량이 소진되면 자동으로 계정을 전환하고 로컬 ~/.codex를 덮어씁니다. 로컬 API 프록시 바인딩 중에는 충돌 방지를 위해 자동으로 꺼집니다.",
+      "proxyLockedNotice": "현재 Codex가 로컬 API 프록시에 바인딩되어 자동 전환이 꺼짐으로 잠겨 있습니다. 프록시 풀에서 상위 계정을 전환하므로 대화가 끊기지 않습니다. 다시 켜려면 프록시 탭에서 기본 설정을 복원하세요.",
+      "proxyBadge": "프록시 제어",
       "checkedText": "자동",
       "uncheckedText": "수동"
     },

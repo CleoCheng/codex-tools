@@ -17,6 +17,7 @@ import { localizeBackendError } from "../i18n/backendErrors";
 import { DEFAULT_LOCALE } from "../i18n/catalog";
 import type { MessageCatalog } from "../i18n/catalog";
 import type {
+  AccountFingerprintProgressEvent,
   AccountSummary,
   AccountWarmupResult,
   ApiProxyKey,
@@ -41,6 +42,7 @@ import type {
   OauthCallbackFinishedEvent,
   PendingUpdateInfo,
   PreparedOauthLogin,
+  ProbeAccountFingerprintsResult,
   RemoteDeployProgress,
   RemoteProxyStatus,
   RemoteServerConfig,
@@ -73,6 +75,7 @@ const CLOUDFLARED_POLL_MS = 3_000;
 const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main-window-visibility-changed";
 const PERIODIC_USAGE_REFRESHED_EVENT = "periodic-usage-refreshed";
 const AUTO_SWITCH_STATUS_EVENT = "auto-switch-status";
+const ACCOUNT_FINGERPRINT_PROGRESS_EVENT = "account-fingerprint-progress";
 const DEFAULT_API_PROXY_USAGE_RANGE: ApiProxyUsageRange = "24h";
 const DEFAULT_API_PROXY_USAGE_METRIC: ApiProxyUsageMetric = "calls";
 const API_PROXY_USAGE_RANGE_SECONDS: Record<ApiProxyUsageRange, number> = {
@@ -119,6 +122,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoAccountWarmupAccountIds: [],
   codexAnalyticsWeeklyBudgetUsd: null,
   remoteServers: [],
+  accountFingerprints: {},
   locale: DEFAULT_LOCALE,
   skippedUpdateVersion: null,
 };
@@ -206,6 +210,23 @@ function buildImportNotice(
       suffix,
     ),
   };
+}
+
+function isLoopbackProxyBaseUrl(url: string | null | undefined): boolean {
+  if (!url) {
+    return false;
+  }
+  try {
+    const parsed = new URL(url.trim());
+    return (
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "::1" ||
+      parsed.hostname === "[::1]"
+    );
+  } catch {
+    return false;
+  }
 }
 
 function buildRemoteProxyFallback(
@@ -329,6 +350,8 @@ export function useCodexController(
   const [stoppingCloudflared, setStoppingCloudflared] = useState(false);
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [warmingAccountId, setWarmingAccountId] = useState<string | null>(null);
+  const [probingAccountKeys, setProbingAccountKeys] = useState<string[]>([]);
+  const [probingAllFingerprints, setProbingAllFingerprints] = useState(false);
   const [renamingAccountId, setRenamingAccountId] = useState<string | null>(
     null,
   );
@@ -1776,6 +1799,127 @@ export function useCodexController(
     };
   }, [applyImportResult, copy.notices, localizeError, localizeImportResult]);
 
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | null = null;
+
+    void listen<AccountFingerprintProgressEvent>(
+      ACCOUNT_FINGERPRINT_PROGRESS_EVENT,
+      (event) => {
+        if (disposed) {
+          return;
+        }
+        const payload = event.payload;
+        if (payload.status === "probing") {
+          setProbingAccountKeys((prev) =>
+            prev.includes(payload.accountKey)
+              ? prev
+              : [...prev, payload.accountKey],
+          );
+          return;
+        }
+        setProbingAccountKeys((prev) =>
+          prev.filter((key) => key !== payload.accountKey),
+        );
+        if (payload.summary) {
+          const summary = payload.summary;
+          setSettings((prev) => {
+            const next = {
+              ...prev,
+              accountFingerprints: {
+                ...prev.accountFingerprints,
+                [payload.accountKey]: summary,
+              },
+            };
+            settingsRef.current = next;
+            return next;
+          });
+        }
+        if (typeof payload.apiProxyEnabled === "boolean") {
+          const nextEnabled = payload.apiProxyEnabled;
+          setAccounts((prev) =>
+            prev.map((item) =>
+              item.accountKey === payload.accountKey
+                ? { ...item, apiProxyEnabled: nextEnabled }
+                : item,
+            ),
+          );
+          if (!nextEnabled) {
+            setApiProxyStatus((prev) =>
+              prev.activeAccountKey === payload.accountKey
+                ? {
+                    ...prev,
+                    activeAccountKey: null,
+                    activeAccountId: null,
+                    activeAccountLabel: null,
+                  }
+                : prev,
+            );
+          }
+        }
+        if (payload.trigger === "sentinel" && payload.status !== "probing") {
+          const isZh = settingsRef.current?.locale === "zh-CN";
+          const accountLabel =
+            payload.accountKey.split("|")[0] || payload.accountKey;
+          if (payload.summary?.degraded && payload.apiProxyEnabled === false) {
+            const detected =
+              payload.summary.detectedModel || (isZh ? "低阶模型" : "a lower model");
+            setNotice({
+              type: "error",
+              message: isZh
+                ? `降智哨兵检测到 ${accountLabel} 模型已降级（实测指纹为 ${detected}），已自动停用该账号并移出反代池。`
+                : `Sentinel detected model degradation on ${accountLabel} (fingerprint: ${detected}); auto-disabled it from proxy pool.`,
+            });
+          } else if (
+            payload.summary &&
+            !payload.summary.error &&
+            !payload.summary.degraded
+          ) {
+            setNotice({
+              type: "info",
+              message: isZh
+                ? `被动哨兵已对 ${accountLabel} 完成低推理异常复检，当前模型指纹正常。`
+                : `Sentinel re-checked ${accountLabel} after low-reasoning alerts; fingerprint is normal.`,
+            });
+          }
+        }
+        if (payload.trigger === "recovery" && payload.status !== "probing") {
+          const isZh = settingsRef.current?.locale === "zh-CN";
+          const accountLabel =
+            payload.accountKey.split("|")[0] || payload.accountKey;
+          if (
+            payload.summary &&
+            !payload.summary.error &&
+            !payload.summary.degraded &&
+            payload.apiProxyEnabled === true
+          ) {
+            setNotice({
+              type: "ok",
+              message: isZh
+                ? `恢复探针检测到 ${accountLabel} 模型指纹已恢复正常，已自动重新启用并加入反代池。`
+                : `Recovery probe confirmed ${accountLabel} is healthy again; automatically re-enabled in proxy pool.`,
+            });
+          }
+        }
+      },
+    )
+      .then((fn) => {
+        if (disposed) {
+          void fn();
+          return;
+        }
+        unlisten = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      if (unlisten) {
+        void unlisten();
+      }
+    };
+  }, []);
+
   const onOpenAddDialog = useCallback(() => {
     setOauthWaitingForCallback(false);
     setReauthorizeAccount(null);
@@ -2123,6 +2267,14 @@ export function useCodexController(
     try {
       const status = await projectCommands.current.invoke<ApiProxyStatus>("bind_codex_to_api_proxy");
       setApiProxyStatus(localizeApiProxyStatus(status));
+      setSettings((prev) => {
+        if (!prev.autoSwitchOnExhaustion) {
+          return prev;
+        }
+        const next = { ...prev, autoSwitchOnExhaustion: false };
+        settingsRef.current = next;
+        return next;
+      });
       setNotice({ type: "ok", message: copy.notices.codexProxyBound });
     } catch (error) {
       setNotice({
@@ -2905,6 +3057,34 @@ export function useCodexController(
               : item,
           ),
         );
+        setSettings((prev) => {
+          const existingFingerprint =
+            prev?.accountFingerprints?.[account.accountKey];
+          if (!prev || !existingFingerprint) {
+            return prev;
+          }
+          if (
+            !existingFingerprint.autoDisabledByFingerprint &&
+            existingFingerprint.autoDisabledAt == null &&
+            (existingFingerprint.recoveryAttempts ?? 0) === 0 &&
+            existingFingerprint.nextRecoveryAt == null
+          ) {
+            return prev;
+          }
+          return {
+            ...prev,
+            accountFingerprints: {
+              ...prev.accountFingerprints,
+              [account.accountKey]: {
+                ...existingFingerprint,
+                autoDisabledByFingerprint: false,
+                autoDisabledAt: null,
+                recoveryAttempts: 0,
+                nextRecoveryAt: null,
+              },
+            },
+          };
+        });
         if (!resolvedEnabled) {
           setApiProxyStatus((prev) =>
             prev.activeAccountKey === account.accountKey
@@ -2945,6 +3125,98 @@ export function useCodexController(
       }
     },
     [copy.notices, localizeError],
+  );
+
+  const onProbeAccountFingerprints = useCallback(
+    async (targetAccounts?: AccountSummary[]) => {
+      const targetList =
+        targetAccounts?.filter((a) => a.sourceKind !== "relay") ?? [];
+      const isBatchAll = !targetAccounts || targetAccounts.length === 0;
+      if (isBatchAll && probingAllFingerprints) {
+        return;
+      }
+      const targetKeys = isBatchAll
+        ? Array.from(
+            new Set(
+              accounts
+                .filter((a) => a.sourceKind !== "relay")
+                .map((a) => a.accountKey),
+            ),
+          )
+        : Array.from(new Set(targetList.map((a) => a.accountKey)));
+
+      if (targetKeys.length === 0) {
+        return;
+      }
+      if (isBatchAll) {
+        setProbingAllFingerprints(true);
+      }
+      setProbingAccountKeys((prev) =>
+        Array.from(new Set([...prev, ...targetKeys])),
+      );
+      try {
+        const result = await projectCommands.current.invoke<ProbeAccountFingerprintsResult>(
+          "probe_account_fingerprints",
+          {
+            accountIds: isBatchAll ? null : targetList.map((a) => a.id),
+            model: null,
+          },
+        );
+        applyAccounts(result.accounts, { notifyBlocked: false });
+        setSettings((prev) => {
+          const next = {
+            ...prev,
+            accountFingerprints: result.accountFingerprints,
+          };
+          settingsRef.current = next;
+          return next;
+        });
+        let normalCount = 0;
+        let degradedCount = 0;
+        let failedCount = 0;
+        let firstError: string | null = null;
+        for (const key of targetKeys) {
+          const item = result.accountFingerprints[key];
+          if (item?.error) {
+            failedCount += 1;
+            if (!firstError) {
+              firstError = item.error;
+            }
+          } else if (!item) {
+            failedCount += 1;
+          } else if (item.degraded) {
+            degradedCount += 1;
+          } else {
+            normalCount += 1;
+          }
+        }
+        const message =
+          failedCount > 0 && targetKeys.length === 1 && firstError
+            ? locale === "zh-CN"
+              ? `指纹检测失败：${firstError}`
+              : `Fingerprint probe failed: ${firstError}`
+            : locale === "zh-CN"
+              ? `指纹检测完成：${normalCount} 个未降智，${degradedCount} 个已降智并自动停用${failedCount > 0 ? `，${failedCount} 个失败${firstError ? `（${firstError}）` : ""}` : ""}。`
+              : `Fingerprint check finished: ${normalCount} normal, ${degradedCount} degraded & disabled${failedCount > 0 ? `, ${failedCount} failed${firstError ? ` (${firstError})` : ""}` : ""}.`;
+        setNotice({
+          type: failedCount > 0 && normalCount === 0 && degradedCount === 0 ? "error" : "ok",
+          message,
+        });
+      } catch (error) {
+        setNotice({
+          type: "error",
+          message: localizeError(String(error)),
+        });
+      } finally {
+        if (isBatchAll) {
+          setProbingAllFingerprints(false);
+        }
+        setProbingAccountKeys((prev) =>
+          prev.filter((key) => !targetKeys.includes(key)),
+        );
+      }
+    },
+    [accounts, applyAccounts, locale, localizeError, probingAllFingerprints],
   );
 
   const onDelete = useCallback(
@@ -3080,6 +3352,7 @@ export function useCodexController(
         }
 
         if (result.localProjectPreservation?.status !== "pending") void remoteProxyAutoRedeployRef.current();
+        void loadApiProxyStatus();
 
         let baseNotice: Notice;
         if (!settings.launchCodexAfterSwitch) {
@@ -3213,6 +3486,7 @@ export function useCodexController(
       settings.restartOpencodeDesktopOnSwitch,
       settings.restartEditorsOnSwitch,
       settings.restartEditorTargets,
+      loadApiProxyStatus,
     ],
   );
 
@@ -3282,6 +3556,11 @@ export function useCodexController(
     void remoteProxyAutoRedeployRef.current();
   }, { invokeCommand: projectCommands.current.invoke, localizeError });
 
+  const codexProxyMode =
+    apiProxyStatus.codexProxyBound ||
+    (apiProxyStatus.codexProxyRestoreAvailable &&
+      isLoopbackProxyBaseUrl(apiProxyStatus.codexProxyBaseUrl));
+
   return {
     accounts: sortedAccounts,
     recoveryRequired,
@@ -3310,6 +3589,7 @@ export function useCodexController(
     exportingAccounts,
     authBusy,
     apiProxyStatus,
+    codexProxyMode,
     apiProxyKeys,
     apiProxyKeyLogs,
     apiProxyKeysLoading,
@@ -3418,6 +3698,9 @@ export function useCodexController(
     onStopCloudflared,
     onRenameAccountLabel,
     onToggleAccountApiProxy,
+    probingAccountKeys,
+    probingAllFingerprints,
+    onProbeAccountFingerprints,
     onDelete,
     onWarmupAccount,
     onUseResetCredit,

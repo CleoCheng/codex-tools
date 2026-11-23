@@ -58,7 +58,13 @@
     "tokensSources": "日志文件",
     "tokensEvents": "Token 事件",
     "tokensFailedSources": "读取失败",
-    "exportAll": "全部导出"
+    "exportAll": "全部导出",
+    "autoSwitchLabel": "自动切号",
+    "autoSwitchOn": "已开启",
+    "autoSwitchOff": "已关闭",
+    "autoSwitchProxyBadge": "反代接管",
+    "autoSwitchHint": "5h / 7d 额度耗尽时自动切号并写入 ~/.codex",
+    "autoSwitchProxyHint": "Codex 已绑定本机反代，已自动锁定关闭；由反代池无感故障转移"
   },
   "addAccount": {
     "smartSwitch": "智能切换",
@@ -546,6 +552,9 @@
     },
     "autoSwitchOnExhaustion": {
       "label": "额度耗尽时自动切换账号",
+      "description": "5 小时或 7 天额度耗尽时自动切换可用账号并重写本机 ~/.codex 配置；使用本机 API 反代时会自动关闭，避免覆盖反代配置导致中断。",
+      "proxyLockedNotice": "检测到当前 Codex 已绑定本机 API 反代，此开关已锁定为关闭。反代池会在服务端自动切换上游账号，不会中断当前对话；如需切回客户端直连自动切号，请先在「反代」页恢复原生配置。",
+      "proxyBadge": "反代接管",
       "checkedText": "自动",
       "uncheckedText": "手动"
     },

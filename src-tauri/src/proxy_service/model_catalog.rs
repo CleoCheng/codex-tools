@@ -2,8 +2,8 @@ use axum::http::HeaderMap;
 
 // Use the client identity verified with the GPT-6.1 Sol Codex model catalog.
 // Keep the HTTP and WebSocket version/user-agent headers aligned.
-pub(super) const CODEX_CLIENT_VERSION: &str = "0.159.0";
-pub(super) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.159.0";
+pub(crate) const CODEX_CLIENT_VERSION: &str = "0.159.0";
+pub(crate) const CODEX_USER_AGENT: &str = "codex_cli_rs/0.159.0";
 
 pub(super) const MODELS: &[&str] = &[
     "gpt-6-astra",

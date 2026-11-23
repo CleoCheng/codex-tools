@@ -69,6 +69,7 @@ impl AccountsStore {
             return Err("未找到要删除的账号".to_string());
         };
         let removed = self.accounts.remove(index);
+        let removed_key = removed.account_key();
         if self.settings.active_account_id.as_deref() == Some(id) {
             self.settings.active_account_id = None;
         }
@@ -76,6 +77,14 @@ impl AccountsStore {
             .auto_account_warmup_account_ids
             .retain(|account_id| account_id != id);
         self.settings.account_warmup_attempts.remove(id);
+        if !self
+            .accounts
+            .iter()
+            .any(|account| account.account_key() == removed_key)
+        {
+            self.settings.account_fingerprints.remove(&removed_key);
+        }
+        self.settings.account_fingerprints.remove(id);
         Ok(removed)
     }
 }
@@ -784,6 +793,8 @@ pub(crate) struct AppSettings {
     pub(crate) api_proxy_api_key: Option<String>,
     pub(crate) locale: AppLocale,
     pub(crate) skipped_update_version: Option<String>,
+    #[serde(default)]
+    pub(crate) account_fingerprints: HashMap<String, AccountFingerprintSummary>,
 }
 
 impl Default for AppSettings {
@@ -833,6 +844,7 @@ impl Default for AppSettings {
             api_proxy_api_key: None,
             locale: AppLocale::default(),
             skipped_update_version: None,
+            account_fingerprints: HashMap::new(),
         }
     }
 }
@@ -879,6 +891,78 @@ pub(crate) struct AppSettingsPatch {
     pub(crate) remote_servers: Option<Vec<RemoteServerConfig>>,
     pub(crate) locale: Option<AppLocale>,
     pub(crate) skipped_update_version: Option<Option<String>>,
+    pub(crate) account_fingerprints: Option<HashMap<String, AccountFingerprintSummary>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelFingerprintProbe {
+    pub(crate) target_model: String,
+    pub(crate) effort: String,
+    pub(crate) degraded: bool,
+    #[serde(default)]
+    pub(crate) skipped: bool,
+    pub(crate) detected_model: String,
+    pub(crate) detected_model_id: String,
+    pub(crate) confidence: Option<f64>,
+    pub(crate) score: Option<f64>,
+    pub(crate) runner_up_model: Option<String>,
+    pub(crate) runner_up_score: Option<f64>,
+    pub(crate) valid_samples: usize,
+    pub(crate) total_samples: usize,
+    pub(crate) ttft_ms: Option<u64>,
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccountFingerprintSummary {
+    pub(crate) degraded: bool,
+    pub(crate) target_model: String,
+    pub(crate) detected_model: String,
+    pub(crate) detected_model_id: String,
+    pub(crate) confidence: Option<f64>,
+    pub(crate) score: Option<f64>,
+    pub(crate) runner_up_model: Option<String>,
+    pub(crate) runner_up_score: Option<f64>,
+    pub(crate) valid_samples: usize,
+    pub(crate) total_samples: usize,
+    pub(crate) ttft_ms: Option<u64>,
+    pub(crate) checked_at: i64,
+    pub(crate) error: Option<String>,
+    #[serde(default)]
+    pub(crate) sol: Option<ModelFingerprintProbe>,
+    #[serde(default)]
+    pub(crate) astra: Option<ModelFingerprintProbe>,
+    #[serde(default)]
+    pub(crate) auto_disabled_by_fingerprint: bool,
+    #[serde(default)]
+    pub(crate) auto_disabled_at: Option<i64>,
+    #[serde(default)]
+    pub(crate) recovery_attempts: u32,
+    #[serde(default)]
+    pub(crate) next_recovery_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProbeAccountFingerprintsResult {
+    pub(crate) accounts: Vec<AccountSummary>,
+    pub(crate) account_fingerprints: HashMap<String, AccountFingerprintSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccountFingerprintProgressEvent {
+    pub(crate) account_key: String,
+    pub(crate) status: String,
+    pub(crate) completed_samples: usize,
+    pub(crate) total_samples: usize,
+    pub(crate) message: Option<String>,
+    pub(crate) summary: Option<AccountFingerprintSummary>,
+    pub(crate) api_proxy_enabled: Option<bool>,
+    #[serde(default)]
+    pub(crate) trigger: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

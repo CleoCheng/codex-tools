@@ -26,6 +26,10 @@ export function accountProps(overrides: Partial<AccountsGridProps> = {}): Accoun
     onToggleApiProxy: async () => true,
     onSwitch: async () => true,
     onDelete: noop,
+    accountFingerprints: {},
+    probingAccountKeys: [],
+    probingAllFingerprints: false,
+    onProbeFingerprints: async () => {},
     ...overrides,
   };
 }

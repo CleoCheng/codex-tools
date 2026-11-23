@@ -99,6 +99,12 @@ pub(crate) async fn update_app_settings_internal(
             store.settings.smart_switch_include_api = value;
         }
         if let Some(value) = patch.auto_switch_on_exhaustion {
+            if value && crate::profile_files::is_codex_using_api_proxy() {
+                return Err(
+                    "Codex 当前已绑定本机 API 反代，不能同时开启自动切号（会覆盖反代配置并中断对话）。请先在反代页恢复原生配置后再开启。"
+                        .to_string(),
+                );
+            }
             store.settings.auto_switch_on_exhaustion = value;
         }
         if let Some(value) = patch.auto_continue_after_switch {
@@ -192,6 +198,9 @@ pub(crate) async fn update_app_settings_internal(
         }
         if let Some(value) = patch.skipped_update_version {
             store.settings.skipped_update_version = value;
+        }
+        if let Some(value) = patch.account_fingerprints {
+            store.settings.account_fingerprints = value;
         }
 
         let settings = store.settings.clone();

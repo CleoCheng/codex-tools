@@ -41,6 +41,10 @@ export function AccountsView({
     onToggleApiProxy: c.onToggleAccountApiProxy,
     onSwitch: c.onSwitch,
     onDelete: (account) => void c.onDelete(account),
+    accountFingerprints: c.settings.accountFingerprints,
+    probingAccountKeys: c.probingAccountKeys,
+    probingAllFingerprints: c.probingAllFingerprints,
+    onProbeFingerprints: c.onProbeAccountFingerprints,
   };
   return (
     <PageFrame kind="list" className="accountsPage">
@@ -54,6 +58,15 @@ export function AccountsView({
             exportingAccounts={c.exportingAccounts}
             onExportAccounts={actions.onExportAll}
             autoSwitchStatus={c.autoSwitchStatus}
+            autoSwitchOnExhaustion={c.settings.autoSwitchOnExhaustion}
+            codexProxyBound={c.codexProxyMode}
+            savingSettings={c.savingSettings}
+            onToggleAutoSwitch={(checked) =>
+              void c.updateSettings(
+                { autoSwitchOnExhaustion: checked },
+                { keepInteractive: true },
+              )
+            }
           />
         }
         toolbarActions={
@@ -61,6 +74,8 @@ export function AccountsView({
             onOpenAddDialog={c.onOpenAddDialog}
             onSmartSwitch={actions.onSmartSwitch}
             onLaunchCodexApp={() => void c.onLaunchCodexApp()}
+            onProbeAllFingerprints={() => void c.onProbeAccountFingerprints()}
+            probingAllFingerprints={c.probingAllFingerprints}
             smartSwitching={c.smartSwitching || c.authBusy}
             launchingCodexApp={c.launchingCodexApp}
           />
