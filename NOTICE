@@ -1,0 +1,24 @@
+Codex Tools (CleoCheng Edition)
+https://github.com/CleoCheng/codex-tools
+
+1. Upstream Attribution (MIT License)
+This repository is derived from and builds upon the open-source project:
+- Upstream Project: 170-carry/codex-tools
+- Upstream URL: https://github.com/170-carry/codex-tools
+- Copyright (c) 2026 170-carry
+- License: MIT License (included verbatim in LICENSE)
+
+Major enhancements and modifications maintained in this repository by CleoCheng include:
+- Dual-probe model degradation ("降智") fingerprint detection, passive sentinel
+  verification, rate-limit-aware recovery scheduling, SSE response.model preflight
+  failover, non-streaming/compact degraded-response replay, and probe-period
+  candidate deprioritization.
+- Windows automatic account switching reliability, strict process-stop boundaries,
+  desktop controller resilience, and guarded Codex session continuation.
+- Unified macOS DMG and Windows NSIS desktop build workflows.
+
+2. Third-Party Components
+- src-tauri/src/proxy_service/catalog/
+  Codex model catalog resources licensed under the Apache License, Version 2.0.
+  The full Apache-2.0 license text is preserved in:
+  src-tauri/src/proxy_service/catalog/LICENSE

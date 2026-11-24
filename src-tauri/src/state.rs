@@ -103,6 +103,7 @@ pub(crate) struct AppState {
     pub(crate) api_proxy: Mutex<Option<ApiProxyRuntimeHandle>>,
     pub(crate) api_proxy_usage_writer: Arc<Mutex<Option<ApiProxyUsageWriter>>>,
     pub(crate) cloudflared: Mutex<Option<CloudflaredRuntimeHandle>>,
+    #[cfg(feature = "desktop")]
     pub(crate) auto_switch: Mutex<crate::auto_switch::AutoSwitchRuntime>,
 }
 
@@ -119,6 +120,7 @@ impl Default for AppState {
             api_proxy: Mutex::new(None),
             api_proxy_usage_writer: Arc::new(Mutex::new(None)),
             cloudflared: Mutex::new(None),
+            #[cfg(feature = "desktop")]
             auto_switch: Mutex::new(crate::auto_switch::AutoSwitchRuntime::default()),
         }
     }

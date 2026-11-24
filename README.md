@@ -1,330 +1,96 @@
 <div align="center">
   <h1>Codex Tools</h1>
-  <p><strong>Codex 多账号管理、CLI/TUI 切换、用量查看和本地 OpenAI 兼容 API 反代工具。</strong></p>
+  <p><strong>Codex / Claude 多账号管理、CLI/TUI 切换、用量监控、模型降智哨兵检测与本地 OpenAI/Anthropic 兼容 API 反代工具。</strong></p>
   <p>
-    <a href="https://github.com/170-carry/codex-tools/releases"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/170-carry/codex-tools?label=release"></a>
-    <a href="https://www.npmjs.com/package/@170-carry/ctc"><img alt="npm" src="https://img.shields.io/npm/v/@170-carry/ctc?label=npm"></a>
-    <a href="https://github.com/170-carry/codex-tools/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
-    <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey">
+    <a href="https://github.com/CleoCheng/codex-tools/releases"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/CleoCheng/codex-tools?label=release"></a>
+    <a href="https://github.com/CleoCheng/codex-tools/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
+    <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey">
   </p>
 </div>
 
-## Overview
+## 概述
 
-Codex Tools 面向同时使用多个 Codex 账号的场景，提供桌面 GUI、命令行入口和本地 `/v1` 反代能力。你可以用它导入账号、查看用量、切换本机 Codex 登录态，也可以把账号池暴露成 OpenAI 兼容接口供 Cursor、ChatWise、CC Switch、本地脚本等工具调用。
+Codex Tools 面向同时使用多个 Codex / Claude 账号的桌面与本地开发场景，提供桌面应用、原生 CLI 与本地 `/v1` 反代网关。本仓库基于开源项目 [170-carry/codex-tools](https://github.com/170-carry/codex-tools)（MIT License）持续维护与深度增强，重点强化了**模型降智检测与自动恢复/回调容错**及 **Windows 桌面自动化可靠性**。
 
-## Contents
+## 核心特性
 
-- [Highlights](#highlights)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [CLI Reference](#cli-reference)
-- [API Proxy](#api-proxy)
-- [Development](#development)
-- [Release](#release)
-- [Documentation](#documentation)
-- [Troubleshooting](#troubleshooting)
+- **模型降智指纹检测与自愈反代（增强）**：
+  - 支持对 `gpt-6.2-sol` / `gpt-6.2-astra` (`xhigh`) 执行双模型指纹探针，并在账号列表与详情页展示实测指纹、置信度与 TTFT。
+  - 反代运行期内置被动哨兵：流式/WebSocket 响应首包通过 SSE `response.model` 预检识别降级模型；非流式与 `/v1/responses/compact` 支持同步复检确认。确认降智后自动停用异常账号、跳过当次统计并将触发请求无缝重放至其他健康替代账号。
+  - 依据官方 `5h` / `7d` 限流窗口与指数退避（`1h -> 2h -> 4h -> 8h -> 12h`）调度周期恢复探针，避免在临近限额时无效探测，指纹恢复正常后自动重新加入反代池。
+- **Windows 稳定性与自动换号续跑（增强）**：
+  - 严格的 Codex 进程树/Job 边界保护，仅停止已核验的 Codex 桌面与原生组件进程，不误杀外部编辑器或独立 CLI 会话。
+  - 额度耗尽时自动过滤授权异常账号（`401` / `token_revoked` 等）与不可用窗口，完成切号重启并安全定位恢复会话。
+  - 清晰的完整重置日期格式（跨午夜不再歧义省略日期）。
+- **多账号管理与用量统计**：OAuth 导入、JSON 批量导入/导出、`5h` / `1week` 额度窗口监控、账号优先级排序、账号预热、重置卡及按会话归属的本地 Token / TPS 统计。
+- **本地 API 反代与公网隧道**：提供 `/v1/responses`、`/v1/chat/completions`、`/v1/messages`、`/v1/responses/compact`、`/v1/images/*` 及 WebSocket 代理，支持优先级/平均/逐个策略、Codex App/CLI 一键绑定及 `cloudflared` 公网访问。
+- **桌面能力**：macOS 状态栏额度展示、Windows 任务栏与托盘额度组件、多语言界面与编辑器联动。
 
-## Highlights
+## 安装与使用
 
-- 多账号管理：OAuth 登录导入、JSON 批量导入、账号备份回导入。
-- 用量查看：展示 `5h`、`1week` 用量窗口、重置时间和账号计划类型；经典界面另显示按会话创建账号归属的本地 Token 用量、基于日志耗时估算的输出速度与 Credits 余额。
-- 账号预热：可手动发送固定 `hello` 最小请求激活 5h 窗口，也可为选中账号配置每日自动预热时段（支持跨午夜）；会真实消耗少量额度。自动预热默认关闭并带持久化冷却；手动预热可绕过冷却，仍检查窗口是否已激活、周额度及授权状态。
-- 账号优先级：支持调整账号组顺序，API 反代可按优先级使用账号，额度恢复后重新优先选择；也保留平均和逐个策略。
-- 重置卡：在账号详情中选择可用卡片并确认使用，提交前重新读取卡片状态，重试同一张卡复用持久化请求 ID。
-- 快速切换：切换 `~/.codex/auth.json` 和 `config.toml`，可联动启动新版 ChatGPT App，并兼容旧 Codex App 与 `codex app` 回退。
-- 本地项目保留：默认开启，保留已有显式关闭设置；本地 ChatGPT 账号切换时先保存最终会话快照，再覆盖同步到目标账号；目标原状态会备份。详见[本地项目保留与恢复](docs/local-project-sharing.md)。
-- CLI/TUI：通过 `ctc` 执行 `list/switch/login/import/export/delete/usage/provider/doctor/report/tui`。
-- API 反代：本地提供 OpenAI 兼容 `/v1` 接口，支持运行中账号轮换。
-- App/CLI 绑定：可一键把 Codex App/CLI 切到本机反代地址，也可一键恢复原配置。
-- 公网访问：集成 cloudflared，支持快速隧道和命名隧道。
-- 桌面能力：状态栏驻留、自动更新、多语言界面、编辑器联动；macOS 可独立启用文字额度栏与五种紧凑额度图标，Windows 可将额度显示在任务栏左侧、任务栏右侧或系统托盘。
+### 桌面安装包
 
-## Preview
+可从本仓库 [Releases](https://github.com/CleoCheng/codex-tools/releases) 下载（或从源码本地构建）：
 
-桌面界面统一使用原版布局；精简布局及布局切换入口已移除，旧布局偏好不再影响启动。
+- **Windows x64**：NSIS 安装包（保留现有本机数据目录兼容标识 `com.carry.codex-tools`，可直接覆盖更新已有数据）
+- **macOS**：Apple Silicon (`aarch64`) / Intel (`x86_64`) DMG 安装包（可通过 GitHub Actions `Build macOS DMGs` 工作流手动构建）
 
-![Codex Tools workspace preview](docs/pr-assets/account-proxy-toggle/accounts-light.jpg)
+### 从源码构建
 
-## Installation
-
-### CLI/TUI
-
-推荐通过 npm 安装命令行入口：
+环境要求：Node.js 20+、Rust stable。
 
 ```bash
-npm i -g @170-carry/ctc
-```
-
-安装后使用：
-
-```bash
-ctc list --json
-ctc switch --best --launch
-ctc provider status --json
-ctc tui
-ctc ui
-```
-
-不想全局安装时，可以直接运行：
-
-```bash
-npx @170-carry/ctc list --json
-```
-
-`ctc ui` 会打开本机已安装的 Codex Tools 桌面应用；npm 包负责安装命令行入口和原生 CLI，不负责安装 `.app` 或 `.exe` 桌面包。
-
-### Desktop App
-
-桌面应用从 GitHub Releases 下载：
-
-- [Latest Release](https://github.com/170-carry/codex-tools/releases/latest)
-- macOS Apple Silicon / Intel
-- Windows x64
-
-安装桌面应用后，可以直接在 GUI 内完成账号导入、用量刷新、切换、API 反代和 cloudflared 配置。
-
-## Quick Start
-
-### Terminal
-
-```bash
-ctc login --label work
-ctc list --refresh --json
-ctc switch --best --launch
-ctc provider sync
-ctc doctor --json
-```
-
-常见流程：
-
-1. 用 `ctc login` 调用官方 `codex login` 并导入账号。
-2. 用 `ctc list --refresh` 查看账号和用量。
-3. 用 `ctc switch 1` 或 `ctc switch --best` 切换账号。
-4. 用 `ctc provider sync` 修复 Codex 历史 provider 元数据。
-5. 用 `ctc doctor` 检查本机环境和账号库状态。
-
-### Desktop
-
-1. 打开 Codex Tools。
-2. 导入一个或多个 Codex 账号。
-3. 刷新账号用量。
-4. 选择账号并切换，或启动本地 API 反代。
-5. 需要公网访问时，再开启 cloudflared。
-
-macOS 首次运行新版时会显示额度展示引导。文字额度栏和紧凑额度图标可以独立启用、同时启用或同时关闭；之后可在“设置”中实时调整文字栏图标与五种额度图标样式。
-
-Windows 首次运行新版时也会显示额度展示引导。任务栏组件和系统托盘额度图标至少启用一种，默认额度口径为“一周剩余”；之后可在“设置”中分别调整位置、图标样式和显示口径。如果左侧组件与 Windows 天气小组件冲突，可通过设置页或引导页打开 Windows 任务栏设置并关闭天气小组件。
-
-## CLI Reference
-
-所有命令默认读取桌面应用相同的数据目录。需要隔离环境时，加 `--data-dir <目录>`。
-
-| 命令 | 说明 |
-| --- | --- |
-| `ctc list --json` | 列出已保存账号，输出 JSON |
-| `ctc list --refresh --json` | 刷新用量后列出账号 |
-| `ctc switch 1 --json` | 切换到第 1 个账号 |
-| `ctc switch --best --launch` | 按余量选择更合适的账号，并启动 `codex app` |
-| `ctc login --label work` | 调用官方 `codex login`，登录后自动导入账号 |
-| `ctc import ./auth.json --json` | 导入账号 JSON |
-| `ctc import ./accounts-dir --json` | 导入目录中的账号 JSON |
-| `ctc import --current --json` | 导入当前 `~/.codex/auth.json` |
-| `ctc export ./accounts.json --json` | 导出账号库 |
-| `ctc export --json` | 直接把账号库 JSON 输出到终端 |
-| `ctc delete 1` | 删除第 1 个账号（交互确认，`--yes` 跳过） |
-| `ctc delete <id> --yes` | 按 `ctc list --json` 中的内部 id 删除账号并跳过确认 |
-| `ctc usage --cached --json` | 查看本地缓存用量 |
-| `ctc provider status --json` | 查看当前 provider、rollout 和 `state_5.sqlite` provider 统计 |
-| `ctc provider sync` | 把本机 Codex 历史元数据同步到当前 provider |
-| `ctc provider switch openai` | 写入 `model_provider = "openai"` 并同步历史元数据 |
-| `ctc provider restore` | 恢复最近一次 provider 同步前备份 |
-| `ctc doctor --json` | 检查数据目录、Codex CLI、账号库和本机 auth 文件 |
-| `ctc report --json` | 输出完整诊断报告 |
-| `ctc tui` | 打开终端账号选择器 |
-| `ctc ui` | 打开已安装的 Codex Tools 桌面应用 |
-
-`ctc provider sync` 会在 `~/.codex/backups_state/provider-sync/` 下生成备份；包含 `encrypted_content` 的历史会恢复列表可见性，但跨 provider 继续 resume 仍可能受 Codex 加密上下文限制。
-
-## API Proxy
-
-Codex Tools 可以启动本地 OpenAI 兼容反代：
-
-- 默认地址：`http://127.0.0.1:8787/v1`
-- 鉴权方式：应用内生成的 `sk-...` API Key
-- 上游来源：已导入的 Codex 账号
-- 账号选择：支持平均、逐个和账号优先级策略，可运行中切换
-- 默认模型：`gpt-5.6-sol`
-- 默认推理：`xhigh` + `default`（标准速度；客户端仍可显式请求 `fast`）
-- GPT-6 Codex 账号代理模型：`gpt-6-astra`、`gpt-6.1-sol`、`gpt-6-sol`、`gpt-6-luna`。代理使用 Codex CLI `0.159.0` 标识及 Responses Lite 请求格式；模型能否调用仍由上游账号权限决定。
-- 新增模型：`gpt-6.1-terra`、`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare`（需要上游账号有对应权限）
-- GPT-5.6 模型：`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`
-
-`CODEX_TOOLS_PROXY_SERVICE_TIER` 可设置代理默认速度，支持 `auto`、`default` / `standard`、`fast` / `priority`、`flex`。显式请求值优先于环境变量；`fast` / `priority` 转为上游 `priority`。未设置或环境变量非法时使用 `default`，显式非法请求仍会被拒绝，Key 的速度权限继续生效。
-
-Claude Code 的 `output_config.effort` 会在显式 `reasoning_effort` / `reasoning.effort` 之后读取，`ultra` 映射为 `max`。
-
-更多链路说明见 [docs/api-proxy.md](docs/api-proxy.md)。
-
-### Local Clients
-
-本地脚本、`curl`、ChatWise 等本机直连客户端，可以直接使用本地 `Base URL`：
-
-```bash
-curl http://127.0.0.1:8787/v1/models \
-  -H "Authorization: Bearer sk-..."
-```
-
-### Cursor
-
-Cursor 可能由服务端代发请求，不建议填写 `127.0.0.1`、`localhost`、`192.168.x.x`、`10.x.x.x` 等本地或私网地址。
-
-如果 Cursor 报 `ssrf_blocked` 或 `connection to private IP is blocked`，请改用：
-
-- 应用内 cloudflared 生成的 `Public URL`
-- 远程 Linux 反代地址
-- 自己的公网域名反向代理地址
-
-GPT-6 Astra、GPT-6.1 Sol、GPT-6 Sol、GPT-6 Luna 分别使用 `gpt-6-astra`、`gpt-6.1-sol`、`gpt-6-sol`、`gpt-6-luna`。Codex 账号代理支持 `low`、`medium`、`high`、`xhigh`、`max` 推理强度（`ultra` 映射为 `max`），拒绝 `none` / `minimal`。默认模型保持 `gpt-5.6-sol`。
-
-GPT-6.1 Sol 也兼容 `gpt6.1-sol`、`gpt-6-1-sol`、`gpt-6.1`、`gpt6.1`、`gpt-6-1` 及带日期的模型名称。已有 Key 若设置了模型白名单，需要显式勾选 `gpt-6.1-sol`；升级不会扩大 Key 权限。其标准短上下文 API 费用估算使用每百万 Token 输入 $2、缓存输入 $0.10、输出 $10，详见 [官方模型说明](https://developers.openai.com/api/docs/models/gpt-6.1-sol)。
-
-模型名称也可使用 `gpt-5.6-sol`。`gpt-5.6`、`gpt5.6` 和 `gpt-5-6` 会映射到 Sol，Terra/Luna 也兼容无点号和全连字符别名。
-
-GPT-5.6 可用推理强度为 `none`、`low`、`medium`、`high`、`xhigh`、`max`；代理还保留 `minimal` 供旧模型兼容。可用速度为 `auto`、`default`、`fast`、`flex`，其中 `fast` 会按上游 wire 值 `priority` 发送。
-
-### CC Switch
-
-在 CC Switch 的 Codex 自定义 provider 中填写：
-
-- `Base URL`：`http://127.0.0.1:8787/v1`
-- `API Key`：应用内生成的 `sk-...`
-- `wire_api`：`responses`
-
-如果 Codex App/CLI 通过 wrapper、app bind、CC Switch 或自定义 provider 指向这个 `Base URL`，账号轮换会发生在本地反代层，不需要关闭 Codex App/CLI。
-
-反代面板也提供“切到本机反代”和“恢复正常地址”按钮，会自动备份并恢复 `~/.codex/config.toml` 与 `~/.codex/auth.json`。
-
-如果官方 Codex App/CLI 接入反代后看不到 GPT-6.1 Sol / Terra，可点击“切到本机反代”（已绑定时为“同步模型目录”），然后重启 Codex App/CLI。API Key 接入下，部分客户端使用内置模型目录，并不会读取反代的 `/v1/models`。绑定时本工具会通过 `model_catalog_json` 提供独立的 Codex 模型目录，按模型开关和当前 Key 白名单筛选；启动代理或修改这些权限时也会同步。原有 Key 的权限不会自动扩大。切换回普通账号或恢复配置后，Codex 继续使用原来的模型目录。
-
-### Anthropic Messages
-
-兼容 Anthropic Messages 的客户端可以请求：
-
-- 地址：`http://127.0.0.1:8787/v1/messages`
-- Key：`x-api-key: sk-...`
-- 版本：`anthropic-version: 2023-06-01`
-
-这里的 `2023-06-01` 是 Anthropic API version，不是模型版本日期。
-
-## Development
-
-### Requirements
-
-- Node.js 20+
-- Rust stable
-- macOS 或 Windows
-
-### Run Locally
-
-```bash
+# 安装依赖并启动桌面开发预览
 npm install
 npm run tauri dev
-```
 
-### Build CLI
-
-```bash
-cd src-tauri
-cargo build --bin codex-tools-cli
-```
-
-### Build Frontend
-
-```bash
+# 构建前端并生成桌面安装包
 npm run build
+npx tauri build
+
+# 仅构建原生命令行工具（codex-tools-cli）
+cd src-tauri
+cargo build --release --bin codex-tools-cli
 ```
 
-## Release
+原生 CLI 可直接在构建产物目录运行 `codex-tools-cli`（包含 `list` / `switch` / `login` / `import` / `export` / `usage` / `provider` / `doctor` / `report` / `tui` 等子命令）。
 
-本仓库使用 GitHub Actions 自动发布桌面安装包和 npm CLI 包。
+## API Proxy 简明说明
 
-触发发布：
+- 默认地址：`http://127.0.0.1:8787/v1`（Anthropic Messages 为 `http://127.0.0.1:8787/v1/messages`）
+- 鉴权：应用内生成的 `sk-...` API Key（支持模型白名单、快速模式及密钥级权限控制）
+- 支持策略：`Priority`（优先级回落）、`Average`（均衡负载）、`Sequential`（同会话亲和逐个消耗）；探针期与刚隔离的降智账号会自动降权至候选队尾
+- 更多说明见 [docs/api-proxy.md](docs/api-proxy.md) 与 [how to use.md](how%20to%20use.md)。
 
-```bash
-git tag v<version>
-git push origin v<version>
-```
+## 文档目录
 
-仅发布桌面版本（跳过 npm）可在 main 推送完成后运行：
+- [快速使用指南](how%20to%20use.md)
+- [API 反代说明](docs/api-proxy.md)
+- [Linux 独立反代守护进程](docs/linux-proxyd.md)
+- [本地项目保留与恢复](docs/local-project-sharing.md)
+- [Codex CLI 配置说明](docs/codex-cli-config.md)
+- [Windows 增强版维护记录](docs/custom-windows-maintenance.md)
+- [更新日志](changelog.md)
 
-```bash
-gh workflow run release.yml --ref main -f release_tag=v<version> -f publish_npm=false
-```
-
-该流程会创建对应版本标签，无需另外推送标签。
-
-发布内容：
-
-- macOS Apple Silicon 桌面安装包
-- macOS Intel 桌面安装包
-- Windows x64 桌面安装包
-- npm wrapper：`@170-carry/ctc`
-- npm native packages：`@170-carry/ctc-darwin-arm64`、`@170-carry/ctc-darwin-x64`、`@170-carry/ctc-win32-x64`
-
-npm 发布需要在 GitHub repository secrets 中配置 `NPM_TOKEN`。
-
-## Documentation
-
-- [How to Use](how%20to%20use.md)
-- [API Proxy](docs/api-proxy.md)
-- [Linux Proxyd](docs/linux-proxyd.md)
-- [Changelog](changelog.md)
-
-## Troubleshooting
-
-### npm 安装后缺少原生包
-
-如果安装时禁用了 optional dependencies，可能会看到缺少平台包的提示。重新安装：
-
-```bash
-npm i -g @170-carry/ctc --include=optional
-```
-
-### macOS 提示应用已损坏
-
-如果 macOS 拦截未签名或隔离属性残留的应用，可以执行：
-
-```bash
-sudo spctl --master-disable
-sudo xattr -r -d com.apple.quarantine /Applications/Codex\ Tools.app
-```
-
-### Cursor 无法访问本地地址
-
-如果 Cursor 返回 `ssrf_blocked`，说明它的请求侧无法访问本机私网地址。请使用 cloudflared、远程 Linux 反代或公网域名。
-
-## Project Layout
+## 仓库结构
 
 ```text
-src/                     React frontend
-src-tauri/               Tauri and Rust backend
-src-tauri/src/bin/       Native CLI binaries
-npm/                     npm wrapper and platform packages
-docs/                    Extra documentation
-.github/workflows/       Release workflows
+src/                     React + TypeScript 前端界面
+src-tauri/               Tauri 与 Rust 后端（桌面端、反代网关、指纹检测）
+src-tauri/src/bin/       原生 CLI 入口（codex-tools-cli）
+src-tauri/proxyd/        Linux 无桌面独立反代守护进程
+docs/                    技术使用文档与维护记录
+.github/workflows/       桌面端校验、macOS DMG 与多平台发布工作流
 ```
 
-## Star History
+## 致谢与原作者声明 / Attribution
 
-<a href="https://star-history.dera.page/#170-carry/codex-tools&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=170-carry/codex-tools&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=170-carry/codex-tools&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=170-carry/codex-tools&type=date&legend=top-left" />
- </picture>
-</a>
+本项目基于原作者 **[170-carry](https://github.com/170-carry)** 开源的 **[170-carry/codex-tools](https://github.com/170-carry/codex-tools)**（MIT License，基线版本 `v3.2.1`）进行衍生开发与长期定制增强。感谢原作者及其贡献者提供的基础架构、反代协议转换及界面设计。
+
+- 原项目地址：<https://github.com/170-carry/codex-tools>
+- 本仓库地址：<https://github.com/CleoCheng/codex-tools>
+- 详细版权与第三方组件声明见 [NOTICE](NOTICE)。
 
 ## License
 
-MIT，详见 [LICENSE](LICENSE)。
+本项目遵循 **MIT License**，完整协议与双方版权声明见 [LICENSE](LICENSE)；`src-tauri/src/proxy_service/catalog/` 中的模型目录资源遵循 Apache License 2.0，见 [catalog LICENSE](src-tauri/src/proxy_service/catalog/LICENSE)。

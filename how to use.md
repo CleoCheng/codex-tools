@@ -1,11 +1,11 @@
 # How to Use
 
-这份文档提供一个简洁的使用流程，适合第一次使用 `codex-tools` 时快速上手。
+这份文档提供一个简洁的使用流程，适合第一次使用 `Codex Tools` 时快速上手。
 
 ## 1. 使用前准备
 
-- 安装并打开 `Codex Tools`
-- 准备好一个或多个 Codex 账号
+- 安装或从源码构建并打开 `Codex Tools`
+- 准备好一个或多个 Codex / Claude 账号
 - 如果要使用编辑器联动或 API 反代，先确保本机已经安装对应工具
 
 ## 2. 导入账号
@@ -18,17 +18,17 @@
 
 导入完成后，应用会保留你当前机器上的登录状态，不会直接覆盖正在使用的账号。
 
-## 3. 查看账号用量
+## 3. 查看账号用量与模型指纹
 
 导入后，先刷新一次账号列表和用量信息。
 
 你可以在界面中看到：
 
-- 每个账号的 `5h` 用量
-- 每个账号的 `1week` 用量
-- 当前账号计划类型
+- 每个账号的 `5h` 与 `1week` 用量窗口及完整重置时间
+- 当前账号套餐类型与授权状态
+- `gpt-6.2-sol` / `gpt-6.2-astra` 模型指纹检测状态（是否降智、检测置信度与下次恢复探针时间）
 
-这一页主要用来判断哪个账号还有可用额度。
+这一页主要用来判断哪个账号状态健康、还有可用额度。
 
 ## 4. 切换账号并启动 ChatGPT / Codex
 
@@ -43,11 +43,11 @@
 
 程序会优先启动新版 ChatGPT App，同时兼容旧 Codex App；如果找不到桌面应用，会自动尝试回退到 `codex app`。
 
-如需提前启动某个账号的 5h 用量窗口，可在账号详情的快捷操作中选择“激活 5h 窗口”。程序会先刷新用量，只有窗口尚未激活且周额度未耗尽时才发送固定 `hello` 请求；该请求会真实消耗少量额度。设置页可为指定账号开启自动预热，默认关闭，成功后 5 小时内或失败后 10 分钟内不会重复发送。
+如需提前启动某个账号的 `5h` 用量窗口，可在账号详情的快捷操作中选择“激活 5h 窗口”。程序会先刷新用量，只有窗口尚未激活且周额度未耗尽时才发送固定 `hello` 请求；该请求会真实消耗少量额度。设置页可为指定账号开启自动预热，默认关闭，成功后 5 小时内或失败后 10 分钟内不会重复发送。
 
 ## 5. 可选：开启 API 反代
 
-如果你希望让其他工具通过 OpenAI 兼容接口接入，可以开启本地 API 反代。
+如果你希望让其他工具通过 OpenAI / Anthropic 兼容接口接入，可以开启本地 API 反代。
 
 基本流程：
 
@@ -57,96 +57,51 @@
 4. 复制界面里显示的 `Base URL` 和 `API Key`
 5. 在你的客户端中填入这些参数
 
-启动后，本地会提供 `/v1` 兼容接口，并自动从账号池里选择可用账号转发请求。
+启动后，本地会提供 `/v1` 兼容接口，并自动从启用且未降智的账号池里选择可用账号转发请求。反代哨兵监测到模型降级时会自动停用问题账号、把触发请求回调重放到其他健康账号，并按限流窗口调度后续恢复探针。
 
 注意：
 
 - 本机直连客户端可以直接使用本地 `Base URL`
 - Codex App/CLI 可以在反代面板点击“切到本机反代”，需要恢复时点击“恢复正常地址”
-- 如果 Codex App/CLI 通过 wrapper、app bind、CC Switch 或自定义 provider 指向这个 `Base URL`，运行中账号轮换在反代层完成，不需要关闭 Codex App/CLI
-- 负载均衡选择“逐个”时，带有稳定 session key 的同一会话会优先复用同一账号，额度或鉴权失败后再切到下一个账号
-- `Cursor` 这类可能由服务端代发请求的客户端，不一定允许访问 `127.0.0.1` 或私网地址
-- 如果 Cursor 报 `ssrf_blocked`，请改用 `cloudflared` 暴露出来的公网地址，或使用远程 Linux 反代
+- 负载均衡选择“逐个”时，带有稳定 session key 的同一会话会优先复用同一账号，额度、鉴权失败或进入探针隔离后再切到下一个账号
+- `Cursor` 这类可能由服务端代发请求的客户端，不一定允许访问 `127.0.0.1` 或私网地址；如报 `ssrf_blocked`，请改用 `cloudflared` 公网地址或远程 `codex-tools-proxyd`
 
 详细说明可参考 [docs/api-proxy.md](docs/api-proxy.md)。
 
-如果你要通过 CC Switch 管理 Codex provider，也可以直接接本工具的反代：
+## 6. 可选：使用原生 CLI 管理账号
 
-- 在 CC Switch 的 **Codex 自定义 provider** 中填写本工具显示的 `Base URL`
-- `Base URL` 填到 `/v1` 为止，例如 `http://127.0.0.1:8787/v1`
-- `API Key` 使用本工具生成的代理 `sk-...`
-- `wire_api` 选择 `responses`
-
-如果你要接 Anthropic Messages 兼容客户端，可以直接请求：
-
-- 地址：`http://127.0.0.1:8787/v1/messages`
-- Key：`x-api-key: sk-...`
-- 版本：`anthropic-version: 2023-06-01`
-
-这里的 `2023-06-01` 是 Anthropic API version，不是模型版本日期。
-
-更完整的配置示例见 [docs/api-proxy.md](docs/api-proxy.md) 里的“通过 CC Switch 接入 Codex”。
-
-## 6. 可选：使用 CLI/TUI 管理账号
-
-如果你要在终端里管理账号，或想把账号切换、导入导出、诊断接进脚本，可以使用 `ctc`。
-
-安装：
+如需在终端或脚本中操作账号库，可直接运行安装包附带或源码编译出的原生命令行工具 `codex-tools-cli`：
 
 ```bash
-npm i -g @170-carry/ctc
+# 从源码编译 CLI
+cd src-tauri
+cargo build --release --bin codex-tools-cli
 ```
 
-安装后执行：
-
-```bash
-ctc list --json
-```
-
-不想全局安装时，也可以直接运行：
-
-```bash
-npx @170-carry/ctc list --json
-```
-
-常用命令：
+常用命令示例：
 
 | 命令 | 用途 |
 | --- | --- |
-| `ctc list --json` | 列出账号，输出 JSON |
-| `ctc list --refresh --json` | 刷新用量后列出账号 |
-| `ctc switch 1 --json` | 切换到第 1 个账号 |
-| `ctc switch --best --launch` | 自动选择余量更合适的账号，并启动 `codex app` |
-| `ctc login --label work` | 调用官方 `codex login`，登录后导入账号 |
-| `ctc import ./auth.json --json` | 导入账号 JSON |
-| `ctc import ./accounts-dir --json` | 导入目录里的账号 JSON |
-| `ctc import --current --json` | 导入当前 `~/.codex/auth.json` |
-| `ctc export ./accounts.json --json` | 导出账号库 |
-| `ctc export --json` | 直接把账号库 JSON 输出到终端 |
-| `ctc delete 1` | 删除第 1 个账号（交互确认，`--yes` 跳过） |
-| `ctc delete <id> --yes` | 按 `ctc list --json` 中的内部 id 删除账号并跳过确认 |
-| `ctc usage --cached --json` | 查看本地缓存用量 |
-| `ctc doctor --json` | 检查本地环境和账号库 |
-| `ctc report --json` | 输出完整诊断报告 |
-| `ctc tui` | 打开终端选择器，选择账号后切换 |
-| `ctc ui` | 打开已安装的 Codex Tools 桌面应用 |
+| `codex-tools-cli list --json` | 列出账号，输出 JSON |
+| `codex-tools-cli list --refresh --json` | 刷新用量后列出账号 |
+| `codex-tools-cli switch 1 --json` | 切换到第 1 个账号 |
+| `codex-tools-cli switch --best --launch` | 自动选择余量更合适的账号，并启动应用 |
+| `codex-tools-cli login --label work` | 调用官方 `codex login`，登录后导入账号 |
+| `codex-tools-cli import ./auth.json --json` | 导入账号 JSON |
+| `codex-tools-cli export ./accounts.json --json` | 导出账号库 |
+| `codex-tools-cli usage --cached --json` | 查看本地缓存用量 |
+| `codex-tools-cli doctor --json` | 检查本地环境和账号库 |
+| `codex-tools-cli report --json` | 输出完整诊断报告 |
+| `codex-tools-cli tui` | 打开终端选择器，选择账号后切换 |
 
-注意：
+说明：
 
 - `switch` 会写入本机 `~/.codex/auth.json` 和 `~/.codex/config.toml`
-- `--json` 适合脚本读取，不需要解析普通文本
-- `--data-dir <目录>` 可以指定账号库位置，适合测试、备份和多环境切换
-- `login` 会直接运行官方 `codex login`，需要在可交互终端里使用
-- `tui` 也需要在可交互终端里使用
-- `ui` 需要本机已经安装 Codex Tools 桌面应用；npm 包负责打开应用，不负责安装 `.app` 或 `.exe`
+- `--data-dir <目录>` 可指定账号库目录，适合隔离测试或多环境备份
 
 ## 7. 日常使用建议
 
-- 新增账号后先刷新一次用量
-- 在调用失败或额度不足时，优先切换到余量更高的账号
+- 新增账号后先刷新一次用量，必要时做一次模型指纹检测
+- 遇到账号 `401` 或授权失效提示时及时重新授权，自动切换与恢复探针会自动跳过失效账号
 - 如果长期需要外部工具接入，可以保持 API 反代开启
-- 如果要暴露给外网使用，可以再配置 `cloudflared`
-
-## 8. 一句话总结
-
-打开应用 -> 导入账号 -> 刷新用量 -> 选择账号 -> 切换并启动 -> 按需开启 API 反代；需要脚本化时使用 CLI/TUI。
+- 需要暴露给外部环境时，可按需配置 `cloudflared` 或部署 Linux `codex-tools-proxyd`

@@ -2,9 +2,9 @@
 name = "app"
 version = "3.2.1"
 description = "Codex Tools"
-authors = ["you"]
+authors = ["CleoCheng"]
 license = "MIT"
-repository = "https://github.com/170-carry/codex-tools"
+repository = "https://github.com/CleoCheng/codex-tools"
 edition = "2021"
 rust-version = "1.77.2"
 default-run = "app"

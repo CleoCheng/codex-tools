@@ -228,7 +228,7 @@ check(
 check(
   "Settings: project/update links and developer action remain",
   settings.includes("Preview update dialog") &&
-    settings.includes("github.com/170-carry/codex-tools"),
+    settings.includes("github.com/CleoCheng/codex-tools"),
 );
 function QuotaPreview({ platform }: { platform: "macos" | "windows" }) {
   const state = useSettingsWorkspace(settingsProps);

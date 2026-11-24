@@ -1,9 +1,6 @@
 name: Build macOS DMGs
 
 on:
-  push:
-    branches:
-      - build/macos-dmg
   workflow_dispatch:
 
 jobs:
@@ -40,18 +37,11 @@ jobs:
 
       - name: Build Apple Silicon DMG (aarch64)
         run: |
-          cat <<'EOF' > /tmp/tauri.bundle.json
-          {
-            "bundle": {
-              "createUpdaterArtifacts": false
-            }
-          }
-          EOF
-          npx tauri build --target aarch64-apple-darwin --bundles dmg --no-sign --config /tmp/tauri.bundle.json
+          npx tauri build --target aarch64-apple-darwin --bundles dmg --no-sign
 
       - name: Build Intel DMG (x86_64)
         run: |
-          npx tauri build --target x86_64-apple-darwin --bundles dmg --no-sign --config /tmp/tauri.bundle.json
+          npx tauri build --target x86_64-apple-darwin --bundles dmg --no-sign
 
       - name: List generated DMG bundles
         run: ls -lh src-tauri/target/*/release/bundle/dmg/*.dmg

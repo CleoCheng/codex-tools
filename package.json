@@ -3,13 +3,14 @@
   "private": true,
   "version": "3.2.1",
   "license": "MIT",
-  "homepage": "https://github.com/170-carry/codex-tools",
+  "author": "CleoCheng",
+  "homepage": "https://github.com/CleoCheng/codex-tools",
   "bugs": {
-    "url": "https://github.com/170-carry/codex-tools/issues"
+    "url": "https://github.com/CleoCheng/codex-tools/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/170-carry/codex-tools.git"
+    "url": "https://github.com/CleoCheng/codex-tools.git"
   },
   "type": "module",
   "scripts": {
@@ -19,7 +20,6 @@
     "lint": "eslint .",
     "macos:menu-bar:acceptance": "bash ./scripts/macos-menu-bar-validation.sh acceptance",
     "macos:menu-bar:dev": "bash ./scripts/macos-menu-bar-validation.sh dev",
-    "npm:sync-packages": "node scripts/sync-npm-package-version.mjs",
     "preview": "vite preview",
     "test:quota-onboarding": "node --test tests/quotaDisplayOnboarding.test.ts",
     "test:usage-errors": "node --test tests/usageRefreshError.test.ts",
