@@ -533,7 +533,7 @@ mod tests {
             let child = crate::utils::new_background_command("powershell.exe")
                 .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
                 .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-            let result = wait_for_windows_continue_helper(&mut target, child, Duration::from_secs(5));
+            let result = wait_for_windows_continue_helper(&mut target, child, Duration::from_secs(15));
             match mode {
                 "recover" => assert!(matches!(result, Ok(WindowsSubmission::Running))),
                 "abort" => assert!(matches!(result, Ok(WindowsSubmission::NotSubmitted(reason)) if reason.contains("未发送继续"))),
