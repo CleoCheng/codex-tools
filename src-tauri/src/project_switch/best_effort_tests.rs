@@ -120,7 +120,7 @@ async fn session_write_failure_rolls_back_before_continuing_account_switch() {
 }
 
 #[tokio::test]
-async fn invalid_credentials_and_pending_recovery_still_stop_account_switch() {
+async fn pending_recovery_stops_account_switch_while_broken_credentials_fall_back() {
     for pending in [false, true] {
         let f = fixture(1, 1, 1);
         if pending {
@@ -140,17 +140,23 @@ async fn invalid_credentials_and_pending_recovery_still_stop_account_switch() {
             &mut FakeLifecycle::default(),
         )
         .map(|_| switched_account(&f));
-        let error = best_effort::finish_switch(attempt, || async { panic!("must not switch") })
-            .await
-            .unwrap_err();
-        assert_eq!(
-            error,
+        let result = best_effort::finish_switch(attempt, || async {
             if pending {
-                "PROJECT_SHARING_RECOVERY_REQUIRED"
-            } else {
-                "PROJECT_SHARING_INVALID_STATE"
+                panic!("must not switch while pending recovery journal exists");
             }
-        );
+            Ok(switched_account(&f))
+        })
+        .await;
+        if pending {
+            assert_eq!(result.unwrap_err(), "PROJECT_SHARING_RECOVERY_REQUIRED");
+        } else {
+            let preservation = result.unwrap().local_project_preservation.unwrap();
+            assert_eq!(preservation.status, "skipped");
+            assert_eq!(
+                preservation.warning.as_deref(),
+                Some("PROJECT_SHARING_INVALID_STATE")
+            );
+        }
         assert_eq!(original, tracked_tree(f.paths.codex_home.parent().unwrap()));
     }
 }
